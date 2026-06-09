@@ -1,3 +1,4 @@
+
 """
 generator.py — Calls the TAMU LLM API to generate answers from retrieved context.
 
@@ -36,7 +37,7 @@ SYSTEM_PROMPT = (
     "First ground your answer in what the department offers (from context). "
     "Then supplement with your general knowledge about industry trends and career guidance — "
     "clearly framing it as general perspective, not department policy. "
-    "Be concrete, practical, and helpful.\n\n"
+    "Be concrete, practical, and helpful. Provide detailed explanations and examples where applicable.\n\n"
 
     "Always: write in a clear, organized tone. Use headers and bullet points. "
     "When context contains a list (people, degrees, programs, research areas, courses), include EVERY item — never truncate or summarize a list. "
@@ -50,7 +51,7 @@ SYSTEM_PROMPT = (
     "Do not include URLs in your answer."
 )
 
-HUMAN_TEMPLATE = """\
+HUMAN_TEMPLATE = """
 Context:
 {context}
 
