@@ -1,14 +1,14 @@
 name: "🐞 Bug report"
-description: Report a problem with the TAMU ECE chatbot. Claude will verify and, if confirmed, open a fix PR for human review.
+description: Report a problem with the TAMU ECE chatbot. Codex will verify and, if confirmed, open a fix PR for human review.
 title: "[Bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for testing the chatbot! Fill this out and Claude will triage it
-        automatically. To explicitly ask Claude to act, mention **@claude**
-        anywhere in the description.
+        Thanks for testing the chatbot! Fill this out and keep **@codex** in the
+        description so Codex triages it automatically and, if it's a real bug,
+        opens a fix PR for review.
   - type: textarea
     id: what-happened
     attributes:
@@ -46,9 +46,9 @@ body:
     validations:
       required: true
   - type: checkboxes
-    id: ask-claude
+    id: ask-codex
     attributes:
-      label: Let Claude handle it
+      label: Let Codex handle it
       options:
-        - label: "@claude please verify this and open a fix PR if it's a real bug"
+        - label: "@codex please verify this and open a fix PR if it's a real bug"
           required: false

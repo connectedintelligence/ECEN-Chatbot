@@ -1,0 +1,69 @@
+name: Codex Review
+
+# Read-only PR review by Codex. Posts feedback as a comment; never approves or
+# merges. NOTE: PRs opened by the Codex Fix workflow are created with the default
+# GITHUB_TOKEN, and GitHub does not re-trigger workflows from that token — so this
+# review runs on PRs opened by humans (or via a PAT), not on Codex's own fix PRs.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  codex-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          persist-credentials: false
+
+      - name: Pre-fetch base and head refs
+        run: |
+          git fetch --no-tags origin \
+            "${{ github.event.pull_request.base.ref }}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head"
+
+      - name: Run Codex
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          safety-strategy: drop-sudo
+          sandbox: read-only
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
+            See AGENTS.md for project context. Review ONLY the diff:
+              git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
+            Focus on: correctness of the fix, no committed secrets/.env values,
+            Python staying py_compile-clean, and any regression risk to retrieval
+            or answer completeness. Be concise. Do not approve or merge.
+
+            PR title/body:
+            ----
+            ${{ github.event.pull_request.title }}
+            ${{ github.event.pull_request.body }}
+
+  post_review:
+    runs-on: ubuntu-latest
+    needs: codex-review
+    if: needs.codex-review.outputs.final_message != ''
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.codex-review.outputs.final_message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `🤖 **Codex review**\n\n${process.env.CODEX_FINAL_MESSAGE}`,
+            });

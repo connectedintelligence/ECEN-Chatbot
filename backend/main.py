@@ -18,6 +18,11 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+# Initialize Sentry as early as possible (no-op unless SENTRY_DSN is set), so the
+# FastAPI integration can capture unhandled exceptions in request handlers.
+from sentry_init import init_sentry
+init_sentry()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -38,6 +43,13 @@ log = logging.getLogger(__name__)
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # On Cloud Run the CPU is only allocated during requests, so the in-process
+    # APScheduler won't fire reliably — set DISABLE_SCHEDULER=1 there and drive
+    # /admin/reindex from Cloud Scheduler instead.
+    if os.getenv("DISABLE_SCHEDULER"):
+        log.info("Scheduler disabled (DISABLE_SCHEDULER set).")
+        yield
+        return
     scheduler = create_scheduler()
     scheduler.start()
     log.info("Scheduler started.")

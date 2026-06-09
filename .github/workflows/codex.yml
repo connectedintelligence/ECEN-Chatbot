@@ -1,0 +1,144 @@
+name: Codex Fix
+
+# Agentic issue → verify → fix → PR loop, powered by OpenAI Codex.
+# A tester opens an Issue and mentions @codex (the bug template prompts this).
+#   Job 1 (codex):   verifies the bug + edits files in the workspace, emits a diff.
+#                    Has the OPENAI_API_KEY but only `contents: read` (no write).
+#   Job 2 (open_pr): applies the diff, opens a PR, comments on the issue.
+#                    Has write access but NOT the API key.
+# Splitting the two jobs is OpenAI's recommended pattern so a malicious issue
+# body can't both reach the key and push code. A human reviews + merges every PR.
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  codex:
+    # Trigger when: an issue mentions @codex, OR a Sentry-created issue lands /
+    # gets the `sentry` label, OR someone comments @codex.
+    if: |
+      (github.event_name == 'issues' && github.event.action == 'opened' && contains(github.event.issue.body, '@codex')) ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'sentry') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@codex'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+      issue_number: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Run Codex
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          output-file: codex-output.md
+          # Optional: pin a model, e.g. `model: gpt-5.1-codex`. Empty = Codex default.
+          prompt: |
+            You are the maintainer agent for the TAMU ECE RAG chatbot.
+            Read AGENTS.md for the file map and how to verify changes.
+
+            A bug was reported in issue #${{ github.event.issue.number }}. It may
+            be a human report OR an automated Sentry crash report — if it contains
+            a stack trace, use the file/line frames to locate the failing code.
+            ----
+            Title: ${{ github.event.issue.title }}
+
+            ${{ github.event.issue.body }}
+            ----
+
+            1. VERIFY whether this is a real bug by reading the relevant code.
+            2. If it is NOT a real bug, do NOT modify any files; explain what you
+               found in your final message.
+            3. If it IS a real bug, implement the smallest correct fix by editing
+               files in the working tree. Keep Python py_compile-clean. In your
+               final message, summarize the root cause and your change.
+            Do not run git, push, or open PRs — the workflow handles that.
+
+      - name: Capture diff
+        run: |
+          git add -A
+          git diff --cached > codex.patch || true
+          echo "----- proposed patch -----"
+          cat codex.patch || true
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-results
+          path: |
+            codex.patch
+            codex-output.md
+          if-no-files-found: ignore
+
+  open_pr:
+    needs: codex
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          name: codex-results
+
+      - name: Apply patch (if any)
+        id: apply
+        run: |
+          if [ -s codex.patch ]; then
+            git apply codex.patch && echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          rm -f codex.patch codex-output.md
+
+      - name: Open Pull Request
+        if: steps.apply.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: codex/fix-issue-${{ needs.codex.outputs.issue_number }}
+          base: main
+          title: "Fix issue #${{ needs.codex.outputs.issue_number }} (Codex)"
+          body: |
+            Automated fix proposed by **Codex** for issue #${{ needs.codex.outputs.issue_number }}.
+
+            ${{ needs.codex.outputs.final_message }}
+
+            ---
+            ⚠️ Review required — this PR will not auto-merge. Closes #${{ needs.codex.outputs.issue_number }} when merged.
+          delete-branch: true
+
+      - name: Comment result on the issue
+        uses: actions/github-script@v7
+        env:
+          FINAL_MESSAGE: ${{ needs.codex.outputs.final_message }}
+          CHANGED: ${{ steps.apply.outputs.changed }}
+          ISSUE_NUMBER: ${{ needs.codex.outputs.issue_number }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const changed = process.env.CHANGED === 'true';
+            const msg = process.env.FINAL_MESSAGE || '(no message returned)';
+            const header = changed
+              ? '🤖 Codex verified this and opened a fix PR for your review.'
+              : '🤖 Codex looked into this but did not change any code (see its reasoning below).';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number(process.env.ISSUE_NUMBER),
+              body: `${header}\n\n${msg}`,
+            });
