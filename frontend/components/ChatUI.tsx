@@ -175,7 +175,7 @@ export default function ChatUI() {
   if (!hasMessages) return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", width: "100%", backgroundColor: BG, fontFamily: "system-ui, sans-serif" }}>
 
-      <h1 style={{ color: "#111111", fontSize: "2.25rem", fontWeight: 400, marginBottom: "2.5rem", letterSpacing: "-0.02em" }}>
+      <h1 className="landing-title" style={{ color: "#111111", fontSize: "2.25rem", fontWeight: 400, marginBottom: "2.5rem", letterSpacing: "-0.02em" }}>
         What's on your mind today?
       </h1>
 
@@ -216,7 +216,7 @@ export default function ChatUI() {
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: BG, fontFamily: "system-ui, sans-serif" }}>
 
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 24px", borderBottom: `1px solid ${BORDER}`, flexShrink: 0 }}>
+      <div className="chat-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 24px", borderBottom: `1px solid ${BORDER}`, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <div style={{ width: "30px", height: "30px", borderRadius: "50%", backgroundColor: MAROON, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <Bot size={15} color="white" />
@@ -227,16 +227,16 @@ export default function ChatUI() {
       </div>
 
       {/* Messages */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "24px 16px" }}>
+      <div className="chat-scroll" style={{ flex: 1, overflowY: "auto", padding: "24px 16px" }}>
         <div style={{ maxWidth: "720px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "20px" }}>
           {messages.map((msg, i) => (
             <div key={i} style={{ display: "flex", gap: "12px", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
               {msg.role === "assistant" && (
-                <div style={{ width: "30px", height: "30px", borderRadius: "50%", backgroundColor: MAROON, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "4px" }}>
+                <div className="msg-avatar" style={{ width: "30px", height: "30px", borderRadius: "50%", backgroundColor: MAROON, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "4px" }}>
                   <Bot size={14} color="white" />
                 </div>
               )}
-              <div style={{ maxWidth: "75%" }}>
+              <div className="bubble-col" style={{ maxWidth: "75%" }}>
                 <div style={{ padding: "12px 16px", borderRadius: msg.role === "user" ? "18px 18px 4px 18px" : "4px 18px 18px 18px", backgroundColor: msg.role === "user" ? MAROON : CARD, border: msg.role === "assistant" ? `1px solid ${BORDER}` : "none", color: msg.role === "user" ? "white" : "#111111", fontSize: "0.875rem", lineHeight: 1.6 }}>
                   {msg.loading ? (
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#6b7280" }}>
@@ -271,7 +271,7 @@ export default function ChatUI() {
                 )}
               </div>
               {msg.role === "user" && (
-                <div style={{ width: "30px", height: "30px", borderRadius: "50%", backgroundColor: BORDER, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "4px" }}>
+                <div className="msg-avatar" style={{ width: "30px", height: "30px", borderRadius: "50%", backgroundColor: BORDER, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "4px" }}>
                   <User size={14} color="#9ca3af" />
                 </div>
               )}

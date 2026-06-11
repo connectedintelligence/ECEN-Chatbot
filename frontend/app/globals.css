@@ -21,3 +21,14 @@ html, body, #__next {
 .markdown-body code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 0.8rem; }
 .markdown-body pre { background: #f3f4f6; padding: 10px; border-radius: 6px; overflow-x: auto; margin: 0.5rem 0; }
 .markdown-body a { color: #500000; text-decoration: underline; }
+
+/* ── Mobile responsiveness ─────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .landing-title { font-size: 1.5rem !important; text-align: center; padding: 0 1.25rem; }
+  .chat-header { padding: 10px 12px !important; }
+  .chat-scroll { padding: 16px 10px !important; }
+  .bubble-col { max-width: 88% !important; }
+  .msg-avatar { display: none !important; }
+  .markdown-body pre { max-width: 100%; }
+  .markdown-body table { display: block; overflow-x: auto; }
+}
