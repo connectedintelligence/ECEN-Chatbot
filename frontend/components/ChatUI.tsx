@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, FormEvent } from "react";
-import { Send, Bot, User, ExternalLink, RefreshCw, Flag, X, Check } from "lucide-react";
+import { Send, Square, Bot, User, ExternalLink, RefreshCw, Flag, X, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
 interface Source { url: string; title: string; section: string; }
@@ -11,16 +11,6 @@ const MAROON = "#500000";
 const BG = "#ffffff";
 const CARD = "#f5f5f5";
 const BORDER = "#e5e5e5";
-
-const SECTION_OPTIONS = [
-  { value: "", label: "All" },
-  { value: "people", label: "People" },
-  { value: "research", label: "Research" },
-  { value: "academics", label: "Academics" },
-  { value: "admissions", label: "Admissions" },
-  { value: "news", label: "News" },
-  { value: "about", label: "About" },
-];
 
 const SECTION_COLORS: Record<string, { bg: string; color: string }> = {
   people:     { bg: "#f3e8ff", color: "#7e22ce" },
@@ -44,10 +34,11 @@ const TOPICS = [
 export default function ChatUI() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [section, setSection] = useState("");
+  const [section] = useState("");
   const [streaming, setStreaming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const hasMessages = messages.length > 0;
 
   const [reportOpen, setReportOpen] = useState(false);
@@ -137,11 +128,14 @@ export default function ChatUI() {
       { role: "assistant", content: "", loading: true },
     ]);
     setStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, section_filter: section || undefined }),
+        signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
@@ -162,9 +156,18 @@ export default function ChatUI() {
         }
       }
     } catch {
-      setMessages(prev => { const u = [...prev]; u[u.length - 1] = { role: "assistant", content: "Sorry, something went wrong. Please try again.", loading: false }; return u; });
-    } finally { setStreaming(false); }
+      setMessages(prev => {
+        const u = [...prev];
+        const last = u[u.length - 1];
+        u[u.length - 1] = controller.signal.aborted
+          ? { ...last, content: last.content || "*Response stopped.*", loading: false }
+          : { role: "assistant", content: "Sorry, something went wrong. Please try again.", loading: false };
+        return u;
+      });
+    } finally { setStreaming(false); abortRef.current = null; }
   }
+
+  function stopStreaming() { abortRef.current?.abort(); }
 
   function onSubmit(e: FormEvent) { e.preventDefault(); send(input.trim()); }
 
@@ -220,14 +223,6 @@ export default function ChatUI() {
           </div>
           <span style={{ color: "#111111", fontWeight: 600, fontSize: "0.9rem" }}>TAMU ECE Assistant</span>
           {reportButton}
-        </div>
-        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-          {SECTION_OPTIONS.map(o => (
-            <button key={o.value} onClick={() => setSection(o.value)}
-              style={{ padding: "4px 12px", borderRadius: "999px", fontSize: "0.75rem", border: `1px solid ${section === o.value ? MAROON : BORDER}`, backgroundColor: section === o.value ? MAROON : "transparent", color: section === o.value ? "white" : "#111111", cursor: "pointer" }}>
-              {o.label}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -295,13 +290,19 @@ export default function ChatUI() {
               value={input}
               onChange={e => setInput(e.target.value)}
               placeholder="Ask anything"
-              disabled={streaming}
               style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "#111111", fontSize: "0.9rem" }}
             />
-            <button type="submit" disabled={streaming || !input.trim()}
-              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "34px", height: "34px", borderRadius: "50%", backgroundColor: !streaming && input.trim() ? MAROON : "#2a2a2a", border: "none", cursor: !streaming && input.trim() ? "pointer" : "default", flexShrink: 0, transition: "background 0.2s" }}>
-              <Send size={14} color="white" />
-            </button>
+            {streaming ? (
+              <button type="button" onClick={stopStreaming} title="Stop generating"
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "34px", height: "34px", borderRadius: "50%", backgroundColor: MAROON, border: "none", cursor: "pointer", flexShrink: 0, transition: "background 0.2s" }}>
+                <Square size={12} color="white" fill="white" />
+              </button>
+            ) : (
+              <button type="submit" disabled={!input.trim()}
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "34px", height: "34px", borderRadius: "50%", backgroundColor: input.trim() ? MAROON : "#2a2a2a", border: "none", cursor: input.trim() ? "pointer" : "default", flexShrink: 0, transition: "background 0.2s" }}>
+                <Send size={14} color="white" />
+              </button>
+            )}
           </div>
         </form>
       </div>
