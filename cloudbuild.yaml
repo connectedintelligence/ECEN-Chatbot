@@ -35,3 +35,13 @@ images:
 
 options:
   logging: CLOUD_LOGGING_ONLY
+
+# Defaults — trigger-level substitution variables override these.
+substitutions:
+  _AR_HOSTNAME: us-central1-docker.pkg.dev
+  _AR_PROJECT_ID: gcp-clen-ecen-ai-initiatives
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _SERVICE_NAME: ecen-chatbot
+  _DEPLOY_REGION: us-central1
+  _PLATFORM: managed
+  _TRIGGER_ID: manual
