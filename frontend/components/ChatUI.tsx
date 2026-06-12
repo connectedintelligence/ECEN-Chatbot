@@ -160,6 +160,11 @@ export default function ChatUI() {
         }),
         signal: controller.signal,
       });
+      if (res.status === 429) {
+        setMessages(prev => { const u = [...prev]; u[u.length - 1] = { role: "assistant", content: "Whoa, that's a lot of questions at once! Give me a minute to catch up, then ask again.", loading: false }; return u; });
+        setStreaming(false); abortRef.current = null;
+        return;
+      }
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       const dec = new TextDecoder();

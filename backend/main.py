@@ -18,10 +18,12 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from generator import generate, generate_stream, route_question, generate as _generate_full
 from retriever import retrieve_async, _people_area_topic, _people_by_area
@@ -53,12 +55,28 @@ async def lifespan(app: FastAPI):
     log.info("Scheduler stopped.")
 
 
+def _client_ip(request: Request) -> str:
+    """Real client IP. The Next.js proxy forwards X-Forwarded-For (Cloud Run
+    sets it on the outer request); direct connections fall back to the peer."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+# Per-IP rate limits (tunable via env without redeploying the image).
+CHAT_RATE_LIMIT = os.getenv("CHAT_RATE_LIMIT", "10/minute")
+REPORT_RATE_LIMIT = os.getenv("REPORT_RATE_LIMIT", "3/minute")
+limiter = Limiter(key_func=_client_ip)
+
 app = FastAPI(
     title="TAMU ECE Chatbot API",
     description="RAG-powered chatbot for the TAMU Electrical & Computer Engineering department.",
     version="1.0.0",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
@@ -116,7 +134,8 @@ async def health():
 
 
 @app.post("/report-issue")
-async def report_issue(req: ReportRequest):
+@limiter.limit(REPORT_RATE_LIMIT)
+async def report_issue(request: Request, req: ReportRequest):
     """Create a GitHub issue from an in-app bug report so non-technical testers
     can report problems without a GitHub account. Labeled 'user-report' so the
     Codex triage workflow picks it up."""
@@ -222,6 +241,82 @@ _CREATOR_CHUNK = {
 
 def _is_creator_question(question: str) -> bool:
     return bool(_CREATOR_RE.search(question.strip()))
+
+
+# ── Security layer ───────────────────────────────────────────────────────────
+# Fast regex screen for blatant injection phrasing (cheap first line; the LLM
+# router's `suspicious` flag catches subtler attempts).
+_INJECTION_RE = _re.compile(
+    r"(ignore\s+(all\s+|the\s+)?(previous|prior|above)\s+(instructions?|prompts?)|"
+    r"disregard\s+(your|the|all)\s+(instructions?|rules|system\s*prompt)|"
+    r"(reveal|show|print|repeat|output)\s+(me\s+)?(your\s+)?(system|hidden|initial)\s*(prompt|instructions?)|"
+    r"developer\s+(mode|instructions?)|jailbreak|do\s+anything\s+now|\bDAN\s+mode\b)",
+    _re.IGNORECASE,
+)
+
+_REFUSAL_TEXT = ("I can't help with that — but I'm happy to answer questions about "
+                 "TAMU ECE programs, courses, research, faculty, admissions, or events!")
+_NO_INFO_TEXT = ("I couldn't find anything reliable on the department website about that. "
+                 "Could you rephrase, or ask me about programs, courses, research areas, "
+                 "faculty, admissions, or events?")
+
+# Secrets that must never appear in output (defense in depth; the corpus is
+# public web pages, but the model sees env-derived strings in error paths).
+_SECRET_RE = _re.compile(
+    r"(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"AKIA[0-9A-Z]{16}|xox[bporas]-[A-Za-z0-9-]{10,}|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
+    r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}|"
+    r"postgres(?:ql)?://[^\s'\"]+:[^\s'\"]+@)"
+)
+
+
+def _redact(text: str) -> str:
+    return _SECRET_RE.sub("[REDACTED]", text)
+
+
+# Minimum cross-encoder score for a chunk to be USED as LLM context (lower bar
+# than the citation gate — recall matters more for answering than for citing).
+CONTEXT_MIN_SCORE = float(os.getenv("CONTEXT_MIN_SCORE", "-4"))
+
+
+def _gate_context(chunks: list[dict]) -> list[dict]:
+    """Drop low-confidence retrievals from the LLM context. Synthetic chunks
+    (rosters, creator, identity — rerank 10) and citation-only chunks always
+    pass. Returns [] when nothing is reliable."""
+    return [c for c in chunks
+            if (c.get("rerank_score", 0.0) or 0.0) >= CONTEXT_MIN_SCORE]
+
+
+def _canned_stream(text: str):
+    """SSE response for canned messages (refusals, no-info) — no LLM, no sources."""
+    import json as _j
+
+    async def gen():
+        yield f"event: sources\ndata: {_j.dumps([])}\n\n"
+        yield f"data: {text.replace(chr(10), chr(92) + 'n')}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+def _audit(request: Request, question: str, resolved: str, route: Optional[dict],
+           sources: list[dict], answer: str, flagged: str = "") -> None:
+    """Structured audit record → Cloud Logging. IP is hashed (privacy), answer
+    truncated. One line per request, greppable via 'AUDIT'."""
+    import hashlib
+    import json as _j
+    ip = _client_ip(request)
+    log.info("AUDIT %s", _j.dumps({
+        "ip_hash": hashlib.sha256(ip.encode()).hexdigest()[:12],
+        "question": question[:300],
+        "resolved": resolved[:300] if resolved != question else None,
+        "intent": (route or {}).get("intent"),
+        "flagged": flagged or None,
+        "sources": [s.get("url", "") for s in sources][:10],
+        "answer_chars": len(answer),
+        "answer_preview": answer[:300],
+    }))
 
 
 # Context for small talk ("who are you", "hi", "what can you do") — answered
@@ -366,13 +461,29 @@ async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict]]:
 
 
 @app.post("/chat", summary="Streaming chat (Server-Sent Events)")
-async def chat_stream(req: ChatRequest):
+@limiter.limit(CHAT_RATE_LIMIT)
+async def chat_stream(request: Request, req: ChatRequest):
     """Returns a streaming text/event-stream response."""
+    # Input sanitization: blatant injection phrasing → polite canned refusal.
+    if _INJECTION_RE.search(req.question):
+        _audit(request, req.question, req.question, None, [], _REFUSAL_TEXT,
+               flagged="injection_regex")
+        return _canned_stream(_REFUSAL_TEXT)
+
     history = _history_dicts(req)
     search_req, route = await _route(req)
-    chunks = await _prepare_chunks(search_req, route)
+
+    # LLM-detected injection / jailbreak / exfiltration attempt.
+    if route and route.get("suspicious"):
+        _audit(request, req.question, search_req.question, route, [],
+               _REFUSAL_TEXT, flagged="injection_llm")
+        return _canned_stream(_REFUSAL_TEXT)
+
+    chunks = _gate_context(await _prepare_chunks(search_req, route))
     if not chunks:
-        raise HTTPException(status_code=404, detail="No relevant content found for your question.")
+        _audit(request, req.question, search_req.question, route, [],
+               _NO_INFO_TEXT, flagged="no_reliable_context")
+        return _canned_stream(_NO_INFO_TEXT)
 
     # Give the generator the resolved interpretation too, so the answer targets
     # what the follow-up actually meant — not a generic reading of it.
@@ -392,18 +503,34 @@ async def chat_stream(req: ChatRequest):
         # Emit sources first
         yield f"event: sources\ndata: {json.dumps(sources)}\n\n"
 
-        # Stream real LLM tokens as they arrive (with auto-continuation on
-        # length-truncation handled inside generate_stream).
+        # Stream LLM tokens with output redaction: hold back a small tail so
+        # secret-shaped strings can't slip through a delta boundary, scrub each
+        # released span, and audit the full answer at the end.
         emitted = 0
+        answer_acc = ""
+        pending = ""
+        _HOLDBACK = 80
+
+        def _sse(text: str) -> str:
+            return f"data: {text.replace(chr(10), chr(92) + 'n')}\n\n"
+
         try:
             async for delta in generate_stream(gen_question, chunks, history=history):
                 if not delta:
                     continue
-                emitted += len(delta)
-                # SSE data lines can't contain raw newlines; the frontend
-                # restores them by replacing the literal "\n" sequence.
-                safe = delta.replace("\n", "\\n")
-                yield f"data: {safe}\n\n"
+                pending += delta
+                if len(pending) > 2 * _HOLDBACK:
+                    release, pending = pending[:-_HOLDBACK], pending[-_HOLDBACK:]
+                    release = _redact(release)
+                    emitted += len(release)
+                    answer_acc += release
+                    yield _sse(release)
+            tail = _redact(pending)
+            pending = ""
+            if tail:
+                emitted += len(tail)
+                answer_acc += tail
+                yield _sse(tail)
         except Exception as e:
             log.warning("Streaming failed (%s); falling back to non-streaming", e)
 
@@ -417,28 +544,46 @@ async def chat_stream(req: ChatRequest):
             if not answer:
                 answer = ("I don't have enough details to answer that — please "
                           "check the sources below or visit engineering.tamu.edu/electrical.")
+            answer = _redact(answer)
+            answer_acc += answer
             yield f"data: {answer.replace(chr(10), chr(92) + 'n')}\n\n"
 
         yield "data: [DONE]\n\n"
+        _audit(request, req.question, search_req.question, route, sources, answer_acc)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/chat/sync", response_model=ChatResponse, summary="Synchronous chat")
-async def chat_sync(req: ChatRequest):
+@limiter.limit(CHAT_RATE_LIMIT)
+async def chat_sync(request: Request, req: ChatRequest):
     """Returns a complete JSON response (no streaming)."""
+    if _INJECTION_RE.search(req.question):
+        _audit(request, req.question, req.question, None, [], _REFUSAL_TEXT,
+               flagged="injection_regex")
+        return ChatResponse(answer=_REFUSAL_TEXT, sources=[])
+
     history = _history_dicts(req)
     search_req, route = await _route(req)
-    chunks = await _prepare_chunks(search_req, route)
+    if route and route.get("suspicious"):
+        _audit(request, req.question, search_req.question, route, [],
+               _REFUSAL_TEXT, flagged="injection_llm")
+        return ChatResponse(answer=_REFUSAL_TEXT, sources=[])
+
+    chunks = _gate_context(await _prepare_chunks(search_req, route))
     if not chunks:
-        raise HTTPException(status_code=404, detail="No relevant content found for your question.")
+        _audit(request, req.question, search_req.question, route, [],
+               _NO_INFO_TEXT, flagged="no_reliable_context")
+        return ChatResponse(answer=_NO_INFO_TEXT, sources=[])
 
     gen_question = req.question if search_req.question == req.question else (
         f"{req.question}\n(In the context of this conversation, this means: "
         f"{search_req.question})")
-    answer = await generate(gen_question, chunks, history=history)
+    answer = _redact(await generate(gen_question, chunks, history=history))
     sources = [Source(url=c["url"], title=c["title"], section=c["section"])
                for c in _select_sources(chunks)]
+    _audit(request, req.question, search_req.question, route,
+           [s.model_dump() for s in sources], answer)
     return ChatResponse(answer=answer, sources=sources)
 
 

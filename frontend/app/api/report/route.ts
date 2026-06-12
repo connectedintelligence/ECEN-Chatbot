@@ -9,10 +9,11 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
+  const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 
   const upstream = await fetch(`${BACKEND_URL}/report-issue`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-forwarded-for": clientIp },
     body: JSON.stringify(body),
   });
 

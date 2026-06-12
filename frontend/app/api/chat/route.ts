@@ -13,13 +13,18 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
  * or deploy). Until it binds its port, fetch fails with ECONNREFUSED. Retry
  * instead of surfacing an error to the user.
  */
-async function fetchBackendWithRetry(body: unknown): Promise<Response> {
+async function fetchBackendWithRetry(body: unknown, clientIp: string): Promise<Response> {
   const maxAttempts = 30;
   for (let attempt = 1; ; attempt++) {
     try {
       return await fetch(`${BACKEND_URL}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // Forward the real client IP (set by Cloud Run on the outer request)
+          // so the backend's per-IP rate limiting sees users, not localhost.
+          "x-forwarded-for": clientIp,
+        },
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -31,8 +36,9 @@ async function fetchBackendWithRetry(body: unknown): Promise<Response> {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
+  const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
 
-  const upstream = await fetchBackendWithRetry(body);
+  const upstream = await fetchBackendWithRetry(body, clientIp);
 
   if (!upstream.ok) {
     const err = await upstream.text();

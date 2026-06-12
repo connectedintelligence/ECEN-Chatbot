@@ -34,6 +34,51 @@ EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 VECTOR_DIM = 384
 BATCH_SIZE = 64
 
+# ── Security: PII / secret scrubbing before indexing ─────────────────────────
+# The corpus is a public university site, so emails/phones are intentionally
+# kept (public directory data). We scrub things that should never be indexed
+# even if they appear on a compromised or misconfigured page.
+import re as _re
+
+_PII_PATTERNS = [
+    ("SSN", _re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    ("CREDIT_CARD", _re.compile(
+        r"\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)[ -]?\d{4}[ -]?\d{4}[ -]?\d{2,4}\b")),
+    ("API_KEY", _re.compile(
+        r"(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+        r"AKIA[0-9A-Z]{16}|xox[bporas]-[A-Za-z0-9-]{10,})")),
+    ("PRIVATE_KEY", _re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("PASSWORD_ASSIGNMENT", _re.compile(r"(?i)\bpassword\s*[:=]\s*\S{6,}")),
+]
+
+
+def scrub_pii(pages) -> None:
+    """Redact sensitive patterns in-place before chunking/embedding.
+    Deterministic (same input -> same output) so diff hashes stay stable."""
+    import hashlib
+    total = 0
+    for p in pages:
+        hits = []
+        text = p.text
+        for label, pat in _PII_PATTERNS:
+            text, n = pat.subn(f"[REDACTED_{label}]", text)
+            if n:
+                hits.append(f"{label}x{n}")
+        if hits:
+            total += len(hits)
+            log.warning("PII scrubbed on %s: %s", p.url, ", ".join(hits))
+            p.text = text
+            p.content_hash = hashlib.md5(text.encode()).hexdigest()
+    if total:
+        log.warning("PII scrub: redactions on this crawl — review the URLs above.")
+
+
+# ── Security: data-poisoning guard ───────────────────────────────────────────
+# If a huge fraction of the corpus changed in one crawl, something is wrong —
+# a compromised site, a broken crawler, or a poisoning attempt. Refuse to
+# auto-index and require a human to re-run with FORCE_INGEST=1.
+POISON_GUARD_THRESHOLD = float(os.getenv("POISON_GUARD_THRESHOLD", "0.5"))
+
 
 # ── DB connection ─────────────────────────────────────────────────────────────
 def get_conn():
@@ -104,14 +149,30 @@ def ingest(diff_mode: bool = False) -> None:
 
     log.info("Starting crawl...")
     pages = crawl()
-    log.info(f"Crawled {len(pages)} pages. Chunking...")
+    log.info(f"Crawled {len(pages)} pages. Scrubbing PII...")
+    scrub_pii(pages)
+    log.info("Chunking...")
     chunks = chunk_docs(pages)
     log.info(f"Produced {len(chunks)} chunks.")
 
     if diff_mode:
         existing = get_existing_hashes(conn)
+        total_chunks = len(chunks)
         chunks = [c for c in chunks if existing.get(c.chunk_id) != c.content_hash]
         log.info(f"Diff mode: {len(chunks)} new/changed chunks to upsert.")
+
+        # Poisoning guard: refuse a suspiciously large one-shot rewrite of the
+        # corpus unless a human explicitly forces it.
+        if existing and total_chunks:
+            changed_ratio = len(chunks) / total_chunks
+            if changed_ratio > POISON_GUARD_THRESHOLD and not os.getenv("FORCE_INGEST"):
+                log.error(
+                    "POISON GUARD: %.0f%% of the corpus changed in one crawl "
+                    "(threshold %.0f%%). Refusing to auto-index — review the "
+                    "site, then re-run with FORCE_INGEST=1 if legitimate.",
+                    changed_ratio * 100, POISON_GUARD_THRESHOLD * 100)
+                conn.close()
+                return
 
     if not chunks:
         log.info("Nothing to upsert.")
