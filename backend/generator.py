@@ -1,3 +1,4 @@
+
 """
 generator.py — Calls the TAMU LLM API to generate answers from retrieved context.
 
@@ -57,7 +58,7 @@ SYSTEM_PROMPT = (
     "but never invent facts about her beyond: name Aarohi Mohrir, Master's in Computer Science, builder of this system."
 )
 
-HUMAN_TEMPLATE = """\
+HUMAN_TEMPLATE = """
 Context:
 {context}
 
@@ -69,6 +70,7 @@ Answer:"""
 
 
 MAX_CHUNK_CHARS = 4000  # increased to avoid truncating list-style pages (e.g. faculty directories)
+
 
 def _build_context(chunks: list[dict]) -> str:
     parts = []
@@ -104,7 +106,7 @@ def _get_client() -> AsyncOpenAI:
 # tokens thinking before any visible answer, so the cap must be generous or the
 # visible answer gets truncated mid-sentence. We also detect a "length" stop and
 # continue automatically (see generate()).
-MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "8000"))
+MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "10000"))
 MAX_CONTINUATIONS = int(os.getenv("LLM_MAX_CONTINUATIONS", "3"))
 # Low temperature → more deterministic, exact answers grounded in the context.
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
