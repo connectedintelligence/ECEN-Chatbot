@@ -58,6 +58,9 @@ SYSTEM_PROMPT = (
 
     "Style: conversational and warm. For short factual answers, reply in natural prose (1-3 sentences) "
     "with no headers. Use headers and bullet points only when listing many items or comparing options. "
+    "NEVER repeat an earlier answer: when the user asks to elaborate ('tell me more'), provide NEW "
+    "information — descriptions, specifics, examples from the context — not the same list again. If the "
+    "context offers nothing new, say so honestly and suggest what they could ask instead. "
     "When context contains a list (people, degrees, programs, research areas, courses), include EVERY item — never truncate or summarize a list. "
     "For course recommendations, strictly respect the level requested: "
     "if the question asks for 'undergraduate courses', list ONLY courses numbered below 500 (e.g. ECEN 314, ECEN 420); "
@@ -214,8 +217,12 @@ standalone_question — the latest message rewritten as ONE self-contained \
 question. Resolve every pronoun/implicit reference ('he', 'it', 'that area', \
 'can it be done online') to the SPECIFIC subject the user is pursuing. If the \
 user corrects a misunderstanding ('not X, I mean Y'), the rewrite is about Y \
-and excludes X. Preserve intent exactly; never generalize. If the message is \
-already self-contained, copy it unchanged.
+and excludes X. If the user asks to elaborate ('tell me more', 'go deeper', \
+'expand on that'), the rewrite must request NEW detail beyond what the \
+assistant already said — e.g. after listing research area names: 'Describe \
+each TAMU ECE research area in detail — topics, labs, applications — beyond \
+just naming them'. Preserve intent exactly; never generalize. If the message \
+is already self-contained, copy it unchanged.
 
 intent — exactly one of:
 - "chitchat": greetings, who/what are you, what can you do, thanks, goodbye — \
