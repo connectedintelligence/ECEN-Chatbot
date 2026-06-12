@@ -14,7 +14,9 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
  * instead of surfacing an error to the user.
  */
 async function fetchBackendWithRetry(body: unknown, clientIp: string): Promise<Response> {
-  const maxAttempts = 30;
+  // ~4.5 min of retries: post-deploy cold starts must pull a multi-GB image
+  // AND load ML models before the backend port opens.
+  const maxAttempts = 90;
   for (let attempt = 1; ; attempt++) {
     try {
       return await fetch(`${BACKEND_URL}/chat`, {

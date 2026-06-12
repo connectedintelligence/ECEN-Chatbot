@@ -34,7 +34,9 @@ from graph_retriever import (
 from scheduler import create_scheduler, run_reindex
 import scheduler as _scheduler
 
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
