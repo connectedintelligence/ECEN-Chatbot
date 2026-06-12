@@ -1,7 +1,20 @@
 "use client";
 
 import { useState, useRef, useEffect, FormEvent } from "react";
-import { Send, Square, Bot, User, ExternalLink, RefreshCw, Flag, X, Check } from "lucide-react";
+import { Send, Square, User, ExternalLink, RefreshCw, Flag, X, Check } from "lucide-react";
+
+/** EIRA — ECE Information & Resource Assistant — illustrated avatar (frontend/public/ellie-avatar.png). */
+function EllieAvatar({ size = 30 }: { size?: number }) {
+  return (
+    <img
+      src="/ellie-avatar.png"
+      alt="EIRA"
+      width={size}
+      height={size}
+      style={{ borderRadius: "50%", objectFit: "cover", display: "block", flexShrink: 0, border: `1px solid ${BORDER}` }}
+    />
+  );
+}
 import ReactMarkdown from "react-markdown";
 
 interface Source { url: string; title: string; section: string; }
@@ -175,9 +188,13 @@ export default function ChatUI() {
   if (!hasMessages) return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", width: "100%", backgroundColor: BG, fontFamily: "system-ui, sans-serif" }}>
 
-      <h1 className="landing-title" style={{ color: "#111111", fontSize: "2.25rem", fontWeight: 400, marginBottom: "2.5rem", letterSpacing: "-0.02em" }}>
-        What's on your mind today?
+      <div style={{ marginBottom: "1.25rem" }}><EllieAvatar size={96} /></div>
+      <h1 className="landing-title" style={{ color: "#111111", fontSize: "2.25rem", fontWeight: 400, marginBottom: "0.5rem", letterSpacing: "-0.02em" }}>
+        Howdy, I'm EIRA!
       </h1>
+      <p style={{ color: "#6b7280", fontSize: "1rem", margin: "0 0 2rem", textAlign: "center", padding: "0 1rem" }}>
+        Your guide to everything ECE at Texas A&M — ask me anything.
+      </p>
 
       <form onSubmit={onSubmit} style={{ width: "100%", maxWidth: "640px", padding: "0 1rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "12px", backgroundColor: CARD, border: `1px solid ${BORDER}`, borderRadius: "999px", padding: "14px 20px", boxShadow: "0 1px 6px rgba(0,0,0,0.08)" }}>
@@ -218,10 +235,8 @@ export default function ChatUI() {
       {/* Header */}
       <div className="chat-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 24px", borderBottom: `1px solid ${BORDER}`, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <div style={{ width: "30px", height: "30px", borderRadius: "50%", backgroundColor: MAROON, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Bot size={15} color="white" />
-          </div>
-          <span style={{ color: "#111111", fontWeight: 600, fontSize: "0.9rem" }}>TAMU ECE Assistant</span>
+          <EllieAvatar size={36} />
+          <span style={{ color: "#111111", fontWeight: 600, fontSize: "0.9rem" }}>EIRA<span className="header-tagline"> · ECE Information &amp; Resource Assistant</span></span>
           {reportButton}
         </div>
       </div>
@@ -232,8 +247,8 @@ export default function ChatUI() {
           {messages.map((msg, i) => (
             <div key={i} style={{ display: "flex", gap: "12px", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
               {msg.role === "assistant" && (
-                <div className="msg-avatar" style={{ width: "30px", height: "30px", borderRadius: "50%", backgroundColor: MAROON, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: "4px" }}>
-                  <Bot size={14} color="white" />
+                <div className="msg-avatar" style={{ flexShrink: 0, marginTop: "4px" }}>
+                  <EllieAvatar size={36} />
                 </div>
               )}
               <div className="bubble-col" style={{ maxWidth: "75%" }}>
@@ -241,7 +256,7 @@ export default function ChatUI() {
                   {msg.loading ? (
                     <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#6b7280" }}>
                       <RefreshCw size={13} style={{ animation: "spin 1s linear infinite" }} />
-                      <span>Searching the department…</span>
+                      <span>EIRA is looking that up…</span>
                     </div>
                   ) : msg.role === "user" ? (
                     msg.content

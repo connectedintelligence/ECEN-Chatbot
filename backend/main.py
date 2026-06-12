@@ -203,8 +203,9 @@ _CREATOR_CHUNK = {
     "text": (
         "This assistant is a Retrieval-Augmented Generation (RAG) system over the "
         "TAMU ECE website, designed and built end to end by Aarohi Mohrir, a "
-        "Master's student in Computer Science — the crawler, the hybrid retrieval "
-        "pipeline, the knowledge graph, and the cloud deployment are all her work. "
+        "Master's student in Computer Science, under the guidance of Prof. Krishna "
+        "Narayanan — the crawler, the hybrid retrieval pipeline, the knowledge "
+        "graph, and the cloud deployment are all her work. "
         "Connect with her on LinkedIn: https://www.linkedin.com/in/aarohi-mohrir/"
     ),
 }

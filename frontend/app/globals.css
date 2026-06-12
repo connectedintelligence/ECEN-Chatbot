@@ -32,3 +32,7 @@ html, body, #__next {
   .markdown-body pre { max-width: 100%; }
   .markdown-body table { display: block; overflow-x: auto; }
 }
+
+@media (max-width: 640px) {
+  .header-tagline { display: none; }
+}
