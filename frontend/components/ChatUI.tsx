@@ -7,7 +7,7 @@ import { Send, Square, User, ExternalLink, RefreshCw, Flag, X, Check } from "luc
 function EllieAvatar({ size = 30 }: { size?: number }) {
   return (
     <img
-      src="/ellie-avatar.png?v=2"
+      src="/ellie-avatar.png?v=3"
       alt="EIRA"
       width={size}
       height={size}
