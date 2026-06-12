@@ -127,8 +127,14 @@ async def report_issue(req: ReportRequest):
         body += f"\n### Context (recent conversation)\n{req.context.strip()}\n"
     body += "\n_Filed automatically by the app on a tester's behalf._"
 
+    import asyncio
+
     try:
-        issue = github_issues.create_issue(title, body, labels=["user-report"])
+        # Run the blocking HTTP call off the event loop so it can't stall other
+        # requests (e.g. an in-flight chat stream).
+        issue = await asyncio.to_thread(
+            github_issues.create_issue, title, body, ["user-report"]
+        )
     except Exception as e:  # noqa: BLE001
         log.exception("Failed to create GitHub issue")
         raise HTTPException(status_code=502, detail="Could not file the report.") from e
@@ -166,6 +172,35 @@ def _select_sources(chunks: list[dict]) -> list[dict]:
     return ordered[:MAX_SOURCES]
 
 
+import re as _re
+
+# "Who built this?" must mean the chatbot, not whatever page retrieval happens
+# to surface (a Mars-construction news chunk once answered this). Catch
+# creator-intent questions BEFORE retrieval and serve a creator context chunk.
+_CREATOR_RE = _re.compile(
+    r"\bwho\b.{0,40}?\b(built|created|made|developed|designed|coded|wrote|behind|author(?:ed)?)\b"
+    r".{0,40}?\b(this|you|it|chatbot|chat\s*bot|bot|assistant|rag|tool)\b[\s?!.]*$",
+    _re.IGNORECASE,
+)
+
+_CREATOR_CHUNK = {
+    "url": "about:creator",
+    "title": "About this chatbot",
+    "section": "about",
+    "rerank_score": 10.0,
+    "text": (
+        "This assistant is a Retrieval-Augmented Generation (RAG) system over the "
+        "TAMU ECE website, designed and built end to end by Aarohi Mohrir, a "
+        "Master's student in Computer Science — the crawler, the hybrid retrieval "
+        "pipeline, the knowledge graph, and the cloud deployment are all her work."
+    ),
+}
+
+
+def _is_creator_question(question: str) -> bool:
+    return bool(_CREATOR_RE.search(question.strip()))
+
+
 async def _prepare_chunks(req: "ChatRequest") -> list[dict]:
     """Assemble the context chunks for a question.
 
@@ -174,6 +209,12 @@ async def _prepare_chunks(req: "ChatRequest") -> list[dict]:
     areas) so the answer can't be silently capped by top-k retrieval.
     Otherwise run the normal hybrid pipeline and prepend graph context.
     """
+    # "Who built this chatbot?" → creator context, no retrieval (which would
+    # otherwise hijack "this" with an arbitrary page about building something).
+    if _is_creator_question(req.question):
+        log.info("Creator question detected: %r", req.question)
+        return [_CREATOR_CHUNK]
+
     # Global "list all faculty" → serve the COMPLETE roster from the graph.
     # Retrieval can't enumerate the whole department (top-k cap + chunk splits),
     # so build it deterministically and keep the matching profile chunks as cites.
@@ -331,4 +372,15 @@ async def manual_reindex():
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Reload is OFF by default: with auto-reload the watcher re-triggers on the
+    # .pyc files Python writes and keeps reloading the heavy ML models, so the
+    # server never stays up. Set RELOAD=1 to opt in during light dev, and we
+    # exclude __pycache__ so it doesn't loop.
+    reload = os.getenv("RELOAD") == "1"
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8000")),
+        reload=reload,
+        reload_excludes=["*.pyc", "__pycache__/*", "*.bak"] if reload else None,
+    )
