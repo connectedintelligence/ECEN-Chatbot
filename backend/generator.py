@@ -197,45 +197,76 @@ def _history_messages(history: list[dict] | None) -> list[dict]:
     return out
 
 
-REWRITE_PROMPT = (
-    "Rewrite the user's latest message as ONE fully self-contained search question "
-    "about the TAMU Electrical & Computer Engineering department.\n"
-    "Rules:\n"
-    "1. Resolve every pronoun and implicit reference ('he', 'it', 'that area') to the "
-    "SPECIFIC topic under discussion — the most recent subject the user was pursuing, "
-    "not just any topic mentioned.\n"
-    "2. If the user is correcting a misunderstanding ('I'm not asking about X, I mean Y'), "
-    "the rewrite MUST be about Y and explicitly exclude X.\n"
-    "3. Preserve the user's intent exactly — do not generalize a specific question into a "
-    "broad one.\n"
-    "4. Keep it short and keyword-rich. If already self-contained, return it unchanged.\n"
-    "Examples:\n"
-    "- Discussing security research; user asks 'can it be done online' -> "
-    "'Can security research at TAMU ECE be done online or remotely?'\n"
-    "- Bot answered about degree programs; user says 'I am not asking about graduate "
-    "programs, I am asking about research' -> 'What security research opportunities and "
-    "faculty does TAMU ECE have (research, not degree programs)?'\n"
-    "Return ONLY the rewritten question, nothing else."
-)
+ROUTER_PROMPT = """\
+You are the query router for the TAMU ECE department chatbot. Read the \
+conversation and the user's latest message, then output STRICT JSON only — no \
+prose, no markdown fences:
+{{"standalone_question": "...", "intent": "...", "topic": "..." or null}}
+
+standalone_question — the latest message rewritten as ONE self-contained \
+question. Resolve every pronoun/implicit reference ('he', 'it', 'that area', \
+'can it be done online') to the SPECIFIC subject the user is pursuing. If the \
+user corrects a misunderstanding ('not X, I mean Y'), the rewrite is about Y \
+and excludes X. Preserve intent exactly; never generalize. If the message is \
+already self-contained, copy it unchanged.
+
+intent — exactly one of:
+- "creator": who built/created/developed THIS chatbot or assistant.
+- "list_all_faculty": wants the complete department faculty list, not a \
+specific area.
+- "people_by_area": wants people (faculty/professors/advisors/mentors) for a \
+specific research topic, ANY phrasing — 'which professors research X', 'whom \
+should I reach out to about X', 'suggest faculty for X', 'who works on X'.
+- "general": everything else (programs, courses, admissions, facts, advice).
+
+topic — only when intent is "people_by_area": the research topic as words \
+likely to appear on faculty profiles. Expand abbreviations (AI -> artificial \
+intelligence; ML -> machine learning). When it matches one of the department's \
+research areas, use that exact name: {areas}. Otherwise null.
+"""
 
 
-async def rewrite_standalone(question: str, history: list[dict] | None) -> str:
-    """Condense a follow-up question + conversation into a standalone search
-    query for retrieval. Falls back to the original question on any failure."""
+def _extract_json(raw: str) -> dict | None:
+    import json
+    m = _json_re.search(raw)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+        return obj if isinstance(obj, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+import re as _re_mod
+_json_re = _re_mod.compile(r"\{.*\}", _re_mod.S)
+
+_VALID_INTENTS = {"creator", "list_all_faculty", "people_by_area", "general"}
+
+
+async def route_question(question: str, history: list[dict] | None,
+                         area_names: list[str]) -> dict | None:
+    """LLM-based intent router + query rewriter — ONE call per question.
+
+    Returns {"standalone_question": str, "intent": str, "topic": str|None} or
+    None on any failure, in which case the caller falls back to the legacy
+    keyword heuristics. This centralizes intent dispatch that was previously
+    scattered across brittle regexes in three modules.
+    """
     hist = _history_messages(history)
-    if not hist:
-        return question
     convo = "\n".join(
         f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content'][:800]}"
         for m in hist
-    )
+    ) or "(no prior conversation)"
     try:
         client = _get_client()
         stream = await client.chat.completions.create(
             model=TAMU_MODEL,
             messages=[
-                {"role": "system", "content": REWRITE_PROMPT},
-                {"role": "user", "content": f"Conversation:\n{convo}\n\nLatest question: {question}"},
+                {"role": "system",
+                 "content": ROUTER_PROMPT.format(areas=", ".join(area_names))},
+                {"role": "user",
+                 "content": f"Conversation:\n{convo}\n\nLatest message: {question}"},
             ],
             temperature=0.0,
             max_tokens=300,
@@ -246,13 +277,26 @@ async def rewrite_standalone(question: str, history: list[dict] | None) -> str:
             delta = chunk.choices[0].delta.content
             if delta:
                 out += delta
-        out = out.strip().strip('"').strip()
-        if out:
-            log.info("Query rewrite: %r -> %r", question, out)
-            return out
+        route = _extract_json(out)
+        if not route:
+            log.warning("Router returned unparseable output: %r", out[:200])
+            return None
+        intent = route.get("intent")
+        sq = (route.get("standalone_question") or "").strip()
+        topic = route.get("topic")
+        if intent not in _VALID_INTENTS or not sq:
+            log.warning("Router returned invalid route: %r", route)
+            return None
+        result = {
+            "standalone_question": sq[:1000],
+            "intent": intent,
+            "topic": (topic or "").strip().lower() or None,
+        }
+        log.info("Route: %r -> %s", question, result)
+        return result
     except Exception as e:  # noqa: BLE001
-        log.warning("Query rewrite failed (%s); using original question", e)
-    return question
+        log.warning("Router call failed (%s); falling back to heuristics", e)
+        return None
 
 
 async def generate(question: str, chunks: list[dict], history: list[dict] | None = None) -> str:

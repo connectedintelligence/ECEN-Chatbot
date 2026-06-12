@@ -283,6 +283,12 @@ _ENUMERATE_WORDS = ("list", "all", "every", "complete", "entire", "full",
                     "who are", "name the", "everyone", "names of")
 
 
+def research_area_names() -> list[str]:
+    """Canonical research-area names from the graph (for the LLM router)."""
+    graph = _load_graph()
+    return list(graph["nodes"]["research_areas"].keys())
+
+
 def is_full_faculty_query(query: str) -> bool:
     """True for 'list all faculty' style questions with no specific area/name."""
     q = (query or "").lower()

@@ -527,6 +527,17 @@ _SCAFFOLD = {
     "researcher", "researchers", "scientist", "scientists", "people", "that",
     "with", "and", "their", "his", "her", "doing", "involved", "focused",
     "instructor", "instructors", "member", "members", "staff",
+    "should", "i", "if", "am", "my", "reach", "out", "contact", "talk",
+    "speak", "connect", "touch", "get", "someone", "anyone", "suggest",
+    "recommend", "advisor", "adviser", "mentor", "email", "whom",
+}
+
+# Common abbreviations -> the phrase actually used in faculty profiles.
+_TOPIC_ALIASES = {
+    "ai": ["artificial", "intelligence"],
+    "ml": ["machine", "learning"],
+    "ev": ["electric", "vehicles"],
+    "rf": ["radio", "frequency"],
 }
 
 _PEOPLE_PLURAL = {
@@ -553,15 +564,25 @@ def _people_area_topic(query: str) -> Optional[list[str]]:
     tokens = set(re.findall(r"[a-z]+", ql))
 
     is_people_plural = bool(tokens & _PEOPLE_PLURAL)
-    who_research = ("who" in tokens) and bool(tokens & _RESEARCH_VERBS)
+    who_research = bool(tokens & {"who", "whom"}) and bool(tokens & _RESEARCH_VERBS)
+    # "whom should I reach out to / contact / talk to about <area>" — a contact
+    # question about a research topic is a faculty-enumeration question.
+    contact_intent = bool(re.search(
+        r"\b(reach out|contact|talk to|speak (to|with)|connect with|get in touch|"
+        r"work with|advisor|adviser|mentor)\b", ql))
     has_research_verb = bool(tokens & _RESEARCH_VERBS)
     has_area_prep = bool(re.search(r"\b(in|on|area of|field of|working on|focused on)\b", ql))
 
-    enumeration = (is_people_plural or who_research) and (has_research_verb or has_area_prep)
+    enumeration = ((is_people_plural or who_research or contact_intent)
+                   and (has_research_verb or has_area_prep))
     if not enumeration:
         return None
 
-    topic = [w for w in re.findall(r"[a-z0-9+&-]+", ql) if w not in _SCAFFOLD]
+    topic = []
+    for w in re.findall(r"[a-z0-9+&-]+", ql):
+        if w in _SCAFFOLD:
+            continue
+        topic.extend(_TOPIC_ALIASES.get(w, [w]))
     return topic or None
 
 

@@ -23,11 +23,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from generator import generate, generate_stream, rewrite_standalone, generate as _generate_full
+from generator import generate, generate_stream, route_question, generate as _generate_full
 from retriever import retrieve_async, _people_area_topic, _people_by_area
 from graph_retriever import (
     graph_query, build_area_roster, is_full_faculty_query, build_full_faculty_roster,
-    faculty_roster_sources,
+    faculty_roster_sources, research_area_names,
 )
 from scheduler import create_scheduler, run_reindex
 import scheduler as _scheduler
@@ -224,24 +224,45 @@ def _is_creator_question(question: str) -> bool:
     return bool(_CREATOR_RE.search(question.strip()))
 
 
-async def _prepare_chunks(req: "ChatRequest") -> list[dict]:
+async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None) -> list[dict]:
     """Assemble the context chunks for a question.
 
-    For "which professors research <area>" enumeration queries, build a
-    deterministic layered roster (precise profile matches + broader graph
-    areas) so the answer can't be silently capped by top-k retrieval.
-    Otherwise run the normal hybrid pipeline and prepend graph context.
+    Dispatch order: the LLM route (intent + topic) when available, falling back
+    to the legacy keyword heuristics when it isn't. The executors themselves
+    (graph rosters, exact-phrase people match, hybrid retrieval) are
+    deterministic either way — only WHO decides the intent differs.
     """
+    intent = (route or {}).get("intent")
+
     # "Who built this chatbot?" → creator context, no retrieval (which would
     # otherwise hijack "this" with an arbitrary page about building something).
-    if _is_creator_question(req.question):
+    if intent == "creator" or (route is None and _is_creator_question(req.question)):
         log.info("Creator question detected: %r", req.question)
         return [_CREATOR_CHUNK]
+
+    # "Whom should I reach out to about <topic>?" — any phrasing, via router.
+    if intent == "people_by_area" and (route or {}).get("topic"):
+        topic = [w for w in (route["topic"] or "").split() if w]
+        precise = _people_by_area(topic)
+        roster = build_area_roster(topic, precise)
+        if roster:
+            roster_chunk = {
+                "url": "research-area-roster",
+                "title": f"Faculty researching {' '.join(topic)}",
+                "section": "graph", "text": roster, "rerank_score": 10.0,
+            }
+            log.info("Routed area roster: topic=%r, %d precise profiles",
+                     " ".join(topic), len(precise))
+            seen: set[str] = set()
+            deduped = [c for c in precise
+                       if c["url"] not in seen and not seen.add(c["url"])]
+            return [roster_chunk] + deduped
+        # No roster for the routed topic → fall through to normal retrieval.
 
     # Global "list all faculty" → serve the COMPLETE roster from the graph.
     # Retrieval can't enumerate the whole department (top-k cap + chunk splits),
     # so build it deterministically and keep the matching profile chunks as cites.
-    if is_full_faculty_query(req.question):
+    if intent == "list_all_faculty" or (route is None and is_full_faculty_query(req.question)):
         roster = build_full_faculty_roster()
         if roster:
             roster_chunk = {
@@ -259,6 +280,10 @@ async def _prepare_chunks(req: "ChatRequest") -> list[dict]:
             log.info("Full faculty roster injected (%d chars), %d sources",
                      len(roster), len(cite_chunks))
             return [roster_chunk] + cite_chunks
+
+    # Legacy keyword heuristic for people-by-area — kept as the no-router
+    # fallback (and as a safety net when the router says "general" but the
+    # phrasing matches the classic enumeration pattern).
     topic = _people_area_topic(req.question)
     if topic:
         precise = _people_by_area(topic)
@@ -293,28 +318,35 @@ def _history_dicts(req: "ChatRequest") -> list[dict]:
     return [{"role": t.role, "content": t.content} for t in (req.history or [])]
 
 
-async def _resolve_question(req: "ChatRequest") -> "ChatRequest":
-    """For follow-up questions, rewrite into a standalone query for RETRIEVAL.
+async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict]]:
+    """Resolve the question through the LLM router (rewrite + intent + topic).
 
-    The creator check runs on the original phrasing, and generation later uses
-    the original question + history — only the search query is rewritten.
+    Returns (search_req, route). search_req carries the standalone question for
+    retrieval; route drives intent dispatch in _prepare_chunks. route is None
+    when the router fails — callers then fall back to the keyword heuristics,
+    so the system degrades to its old behavior, never below it. The creator
+    regex stays as a zero-cost fast path for its unambiguous phrasings.
     """
-    history = _history_dicts(req)
-    if not history or _is_creator_question(req.question):
-        return req
-    rewritten = await rewrite_standalone(req.question, history)
-    if rewritten == req.question:
-        return req
-    return ChatRequest(question=rewritten[:1000], section_filter=req.section_filter,
-                       history=req.history)
+    if _is_creator_question(req.question):
+        return req, {"intent": "creator", "standalone_question": req.question,
+                     "topic": None}
+    route = await route_question(req.question, _history_dicts(req),
+                                 research_area_names())
+    if not route:
+        return req, None
+    sq = route["standalone_question"]
+    if sq != req.question:
+        req = ChatRequest(question=sq, section_filter=req.section_filter,
+                          history=req.history)
+    return req, route
 
 
 @app.post("/chat", summary="Streaming chat (Server-Sent Events)")
 async def chat_stream(req: ChatRequest):
     """Returns a streaming text/event-stream response."""
     history = _history_dicts(req)
-    search_req = await _resolve_question(req)
-    chunks = await _prepare_chunks(search_req)
+    search_req, route = await _route(req)
+    chunks = await _prepare_chunks(search_req, route)
     if not chunks:
         raise HTTPException(status_code=404, detail="No relevant content found for your question.")
 
@@ -372,8 +404,8 @@ async def chat_stream(req: ChatRequest):
 async def chat_sync(req: ChatRequest):
     """Returns a complete JSON response (no streaming)."""
     history = _history_dicts(req)
-    search_req = await _resolve_question(req)
-    chunks = await _prepare_chunks(search_req)
+    search_req, route = await _route(req)
+    chunks = await _prepare_chunks(search_req, route)
     if not chunks:
         raise HTTPException(status_code=404, detail="No relevant content found for your question.")
 
