@@ -11,6 +11,9 @@ on:
 
 jobs:
   codex-review:
+    # Skip PRs opened by bots (e.g. the AI fix workflow) — they lack write access
+    # required by openai/codex-action and don't need a second AI review pass.
+    if: github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     permissions:
       contents: read

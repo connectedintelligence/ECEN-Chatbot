@@ -20,15 +20,7 @@ import ReactMarkdown from "react-markdown";
 interface Source { url: string; title: string; section: string; }
 interface Message { role: "user" | "assistant"; content: string; sources?: Source[]; suggestions?: string[]; feedback?: "up" | "down"; loading?: boolean; }
 
-/** Split the raw streamed answer into display text + suggested follow-ups. */
-function parseAnswer(raw: string): { display: string; suggestions?: string[] } {
-  const idx = raw.indexOf("|||SUGGEST");
-  if (idx === -1) return { display: raw };
-  const display = raw.slice(0, idx).trimEnd();
-  const suggestions = raw.slice(idx + 10).replace(/^:?\s*/, "")
-    .split("|").map(s => s.trim()).filter(Boolean).slice(0, 3);
-  return { display, suggestions: suggestions.length ? suggestions : undefined };
-}
+import { parseAnswer } from "../lib/parseAnswer";
 
 const MAROON = "#500000";
 const BG = "#ffffff";

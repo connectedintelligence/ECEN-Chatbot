@@ -1,32 +1,74 @@
 #!/usr/bin/env python3
 """
 implement.py — Called by codex.yml to generate and apply a fix.
-Reads the issue, calls the OpenAI API, and writes changes directly
-to the runner filesystem so git can capture them.
+Reads the issue + all prior triage comments, calls the OpenAI API,
+writes the fix AND a regression test, then the workflow gates on both
+test suites passing before opening a PR.
 """
 
 import json
 import os
 import sys
+import urllib.request
 from openai import OpenAI
 
-BACKEND_FILES = [
+SOURCE_FILES = [
+    # Backend
     "backend/generator.py",
     "backend/retriever.py",
     "backend/main.py",
     "backend/graph_retriever.py",
+    # Crawler
+    "crawler/crawler.py",
+    "crawler/chunker.py",
+    "crawler/ingest.py",
+    # Frontend
+    "frontend/components/ChatUI.tsx",
+    "frontend/lib/parseAnswer.ts",
+    "frontend/app/api/chat/route.ts",
+]
+
+TEST_FILES = [
+    # Existing tests — Codex must not break these
+    "tests/test_generator_prompt.py",
+    "frontend/__tests__/parseAnswer.test.ts",
 ]
 
 
-def read_files() -> str:
+def read_files(paths: list[str]) -> str:
     parts = []
-    for path in BACKEND_FILES:
+    for path in paths:
         try:
             with open(path) as f:
                 parts.append(f"=== {path} ===\n{f.read()}")
         except FileNotFoundError:
             pass
     return "\n\n".join(parts)
+
+
+def fetch_issue_comments(repo: str, issue_number: str, token: str) -> str:
+    """Fetch all comments on the issue so the triage plan is visible to the model."""
+    url = f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            comments = json.loads(resp.read())
+        parts = []
+        for c in comments:
+            author = c.get("user", {}).get("login", "unknown")
+            body = c.get("body", "").strip()
+            parts.append(f"[{author}]: {body}")
+        return "\n\n".join(parts)
+    except Exception as e:
+        print(f"Warning: could not fetch issue comments: {e}")
+        return ""
 
 
 def main() -> None:
@@ -36,47 +78,80 @@ def main() -> None:
     issue_title  = os.environ.get("ISSUE_TITLE", "")
     issue_body   = os.environ.get("ISSUE_BODY", "")
     comment_body = os.environ.get("COMMENT_BODY", "")
+    repo         = os.environ.get("GITHUB_REPOSITORY", "")
+    token        = os.environ.get("GITHUB_TOKEN", "")
 
-    files_content = read_files()
+    files_content = read_files(SOURCE_FILES)
+    tests_content = read_files(TEST_FILES)
 
-    prompt = f"""You are fixing a bug in the TAMU ECE RAG chatbot (FastAPI/Python backend + Next.js frontend).
+    # Fetch triage comments so the detailed fix plan reaches the model
+    prior_comments = ""
+    if repo and token and issue_number != "?":
+        prior_comments = fetch_issue_comments(repo, issue_number, token)
+
+    triage_section = (
+        f"\nPrior issue comments (including triage plan — follow this plan):\n{prior_comments}\n"
+        if prior_comments else ""
+    )
+
+    prompt = f"""You are a senior software engineer fixing a bug in the TAMU ECE RAG chatbot \
+(FastAPI/Python backend + Next.js/TypeScript frontend). You write tests first, then the fix.
 
 Issue #{issue_number}: {issue_title}
 
 Issue body:
 {issue_body}
-
+{triage_section}
 Approval comment:
 {comment_body}
 
-Current backend files:
+Current source files (backend + frontend):
 {files_content}
 
-Make the SMALLEST correct fix. Rules:
-- Only change what is needed to fix the reported issue.
-- Do not break imports, startup, the retrieval pipeline, or answer completeness.
-- Keep every Python file py_compile-clean.
-- Do not change unrelated behaviour.
+Existing test files (you must not break these, and you must extend them):
+{tests_content}
 
+## Your job — act like a proper developer + tester
+
+1. UNDERSTAND the root cause from the triage plan above.
+2. WRITE or EXTEND the relevant test file so it has a test that would FAIL before your fix \
+   and PASS after it. This is a regression test — it proves the bug is fixed and guards against \
+   future regressions. Follow the existing test style.
+3. WRITE the fix across all affected files (backend AND frontend if needed).
+4. VERIFY mentally that your fix makes the new test pass and does not break the existing ones.
+
+## Rules
+- Follow the triage plan — it has already identified the root cause and all affected files.
+- Fix ALL affected files. Never fix only the backend when the frontend is also broken, or vice versa.
+- Keep every Python file py_compile-clean.
+- Keep TypeScript/TSX/TS files syntactically valid.
+- Tests go in: tests/test_<module>.py (backend) or frontend/__tests__/<subject>.test.ts (frontend).
+- Do not change unrelated behaviour or unrelated tests.
+
+## Output format
 Output a JSON object with EXACTLY this structure (no markdown, no code fences):
 {{
-  "summary": "One sentence describing root cause and fix",
+  "summary": "One sentence: root cause + what the fix does + what the new test checks",
   "files": [
     {{
+      "path": "tests/test_generator_prompt.py",
+      "content": "...complete file including new regression test..."
+    }},
+    {{
       "path": "backend/generator.py",
-      "content": "...complete new file content..."
+      "content": "...complete fixed file..."
     }}
   ]
 }}
 
-Only include files that actually need to change."""
+Include EVERY file that changes — source files AND test files. Only omit files that are truly unchanged."""
 
     print(f"Calling OpenAI API for issue #{issue_number}…")
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
-        max_tokens=8000,
+        max_tokens=16000,
         temperature=0.1,
     )
 
@@ -92,15 +167,16 @@ Only include files that actually need to change."""
     print(f"Summary: {result.get('summary', '')}")
 
     files = result.get("files", [])
-    print(f"Files to change: {[f['path'] for f in files]}")
+    print(f"Files to write: {[f['path'] for f in files]}")
+
+    allowed_prefixes = ("backend/", "crawler/", "frontend/", "tests/")
 
     for fc in files:
         path    = fc.get("path", "").strip()
         content = fc.get("content", "")
         if not path or not content:
             continue
-        # Safety: only allow source directories
-        if not any(path.startswith(d) for d in ("backend/", "crawler/", "frontend/")):
+        if not any(path.startswith(d) for d in allowed_prefixes):
             print(f"Skipping disallowed path: {path}")
             continue
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

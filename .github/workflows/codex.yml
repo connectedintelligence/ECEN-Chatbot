@@ -2,8 +2,12 @@ name: AI Implement (fix)
 
 # Phase 2 of the report → fix loop. The maintainer approves a triaged plan by
 # commenting "@codex implement" on the issue. A Python script calls the OpenAI
-# API directly on the runner (no container isolation), writes the fix, and the
-# workflow opens a PR — but ONLY if the backend still compiles. A human merges.
+# API, writes the fix + a regression test, then the workflow gates on:
+#   1. py_compile (backend syntax)
+#   2. pytest     (backend unit tests)
+#   3. npm test   (frontend unit tests)
+#   4. npm build  (frontend build)
+# A PR is opened only if ALL gates pass. A human merges.
 
 on:
   issue_comment:
@@ -11,7 +15,7 @@ on:
 
 jobs:
   implement:
-    if: ${{ github.event.issue && contains(github.event.comment.body, '@codex implement') }}
+    if: ${{ github.event.issue && contains(github.event.comment.body, '@codex implement') && github.event.comment.user.login == github.repository_owner }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,44 +30,95 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install OpenAI SDK
-        run: pip install openai
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-      - name: Generate and apply fix
+      - name: Install Python deps
+        run: pip install openai pytest
+
+      - name: Generate fix + regression test
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ISSUE_NUMBER:   ${{ github.event.issue.number }}
-          ISSUE_TITLE:    ${{ github.event.issue.title }}
-          ISSUE_BODY:     ${{ github.event.issue.body }}
-          COMMENT_BODY:   ${{ github.event.comment.body }}
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER:      ${{ github.event.issue.number }}
+          ISSUE_TITLE:       ${{ github.event.issue.title }}
+          ISSUE_BODY:        ${{ github.event.issue.body }}
+          COMMENT_BODY:      ${{ github.event.comment.body }}
         run: python .github/scripts/implement.py
 
-      - name: Verify backend compiles (gate)
+      # ── Gate 1: Python syntax ──────────────────────────────────────────────
+      - name: Gate 1 — py_compile
         id: compile
         run: |
           if python -m py_compile backend/*.py crawler/*.py 2>&1; then
             echo "ok=true"  >> "$GITHUB_OUTPUT"
-            echo "py_compile passed."
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "py_compile FAILED — will not open a PR."
+            echo "py_compile FAILED"
           fi
 
+      # ── Gate 2: Backend unit tests ─────────────────────────────────────────
+      - name: Gate 2 — pytest
+        id: pytest
+        if: steps.compile.outputs.ok == 'true'
+        run: |
+          if pytest tests/ -v 2>&1; then
+            echo "ok=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "pytest FAILED"
+          fi
+
+      # ── Gate 3: Frontend unit tests ────────────────────────────────────────
+      - name: Gate 3 — npm test
+        id: npmtest
+        if: steps.pytest.outputs.ok == 'true'
+        run: |
+          cd frontend
+          npm install --legacy-peer-deps
+          if npm test -- --ci 2>&1; then
+            echo "ok=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "npm test FAILED"
+          fi
+
+      # ── Gate 4: Frontend build ─────────────────────────────────────────────
+      - name: Gate 4 — npm build
+        id: build
+        if: steps.npmtest.outputs.ok == 'true'
+        run: |
+          cd frontend
+          if npm run build 2>&1; then
+            echo "ok=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "npm run build FAILED"
+          fi
+
+      # ── Diff check ─────────────────────────────────────────────────────────
       - name: Check for changes
         id: diff
         run: |
           git add -A
           if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No files changed."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "Changes detected:"
             git diff --cached --stat
           fi
 
+      # ── Open PR only if all gates green ───────────────────────────────────
       - name: Open Pull Request
-        if: steps.compile.outputs.ok == 'true' && steps.diff.outputs.changed == 'true'
+        if: |
+          steps.compile.outputs.ok == 'true' &&
+          steps.pytest.outputs.ok == 'true' &&
+          steps.npmtest.outputs.ok == 'true' &&
+          steps.build.outputs.ok == 'true' &&
+          steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -73,30 +128,47 @@ jobs:
           body: |
             Automated fix for issue #${{ github.event.issue.number }}.
 
-            ✅ Passed the `py_compile` gate.
+            ✅ py_compile passed
+            ✅ pytest passed (includes new regression test)
+            ✅ npm test passed
+            ✅ npm build passed
+
             ⚠️ Review required — this PR will not auto-merge.
 
             Closes #${{ github.event.issue.number }} when merged.
           delete-branch: true
 
+      # ── Report outcome on the issue ────────────────────────────────────────
       - name: Comment result on the issue
         uses: actions/github-script@v7
         env:
-          COMPILE_OK:   ${{ steps.compile.outputs.ok }}
-          CHANGED:      ${{ steps.diff.outputs.changed }}
+          COMPILE_OK:  ${{ steps.compile.outputs.ok }}
+          PYTEST_OK:   ${{ steps.pytest.outputs.ok }}
+          NPMTEST_OK:  ${{ steps.npmtest.outputs.ok }}
+          BUILD_OK:    ${{ steps.build.outputs.ok }}
+          CHANGED:     ${{ steps.diff.outputs.changed }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         with:
           github-token: ${{ github.token }}
           script: |
-            const compileOk = process.env.COMPILE_OK === 'true';
-            const changed   = process.env.CHANGED   === 'true';
+            const compileOk = process.env.COMPILE_OK  === 'true';
+            const pytestOk  = process.env.PYTEST_OK   === 'true';
+            const npmOk     = process.env.NPMTEST_OK  === 'true';
+            const buildOk   = process.env.BUILD_OK    === 'true';
+            const changed   = process.env.CHANGED     === 'true';
             let msg;
-            if (changed && compileOk) {
-              msg = '✅ Fix implemented and PR opened. Review and merge when ready.';
+            if (changed && compileOk && pytestOk && npmOk && buildOk) {
+              msg = '✅ Fix + regression test implemented. All gates passed. PR opened — review and merge when ready.';
             } else if (!changed) {
               msg = '🤖 No code changes were produced. Try commenting `@codex implement` again or apply the fix manually.';
+            } else if (!compileOk) {
+              msg = '❌ Fix generated but failed **py_compile** — no PR opened. See Actions log.';
+            } else if (!pytestOk) {
+              msg = '❌ Fix generated but failed **pytest** — the regression test or an existing test is failing. See Actions log.';
+            } else if (!npmOk) {
+              msg = '❌ Fix generated but failed **npm test** — a frontend test is failing. See Actions log.';
             } else {
-              msg = '❌ A fix was generated but failed the `py_compile` gate — no PR opened. See the Actions log for details.';
+              msg = '❌ Fix generated but failed **npm build** — TypeScript or build error. See Actions log.';
             }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
