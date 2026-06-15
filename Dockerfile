@@ -2,7 +2,11 @@
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --omit=dev --legacy-peer-deps
+# Install ALL deps (incl. devDependencies): next build needs typescript,
+# @types/*, tailwindcss, postcss, autoprefixer at build time. Dev deps never
+# reach the runtime image — this is a multi-stage build and only .next output
+# is copied to stage 2, so Jest etc. are excluded regardless.
+RUN npm install --legacy-peer-deps
 COPY frontend/ .
 RUN npm run build
 
