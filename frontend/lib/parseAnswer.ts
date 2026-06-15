@@ -11,7 +11,7 @@ export function parseAnswer(raw: string): { display: string; suggestions?: strin
     .replace(/^:?\s*/, "")
     .split("|")
     .map((s) => s.trim())
-    .filter((s) => s && !/^<q\d>$/i.test(s))
+    .filter((s) => s && !/^<.*>$/.test(s))
     .slice(0, 3);
   return { display, suggestions: suggestions.length ? suggestions : undefined };
 }

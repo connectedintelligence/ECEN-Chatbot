@@ -7,18 +7,19 @@ import re
 
 def test_suggest_prompt_has_no_angle_bracket_placeholders():
     """
-    The SYSTEM_PROMPT must not instruct the model to output literal <q1>/<q2>/<q3>.
-    Regression test for issue #12.
+    The SYSTEM_PROMPT must not instruct the model to output angle-bracket placeholders.
+    Regression test for issues #12 and #11.
     """
     with open("backend/generator.py") as f:
         source = f.read()
 
-    # Find the SYSTEM_PROMPT string (everything between the triple-quote delimiters)
-    match = re.search(r'SYSTEM_PROMPT\s*=\s*["\']+(.*?)["\']+\s*\n', source, re.DOTALL)
-    # Simpler check: the literal tokens <q1>, <q2>, <q3> must not appear in generator.py
+    # Must not contain <q1>/<q2>/<q3> style tokens
     assert "<q1>" not in source, "SYSTEM_PROMPT must not contain literal placeholder <q1>"
     assert "<q2>" not in source, "SYSTEM_PROMPT must not contain literal placeholder <q2>"
     assert "<q3>" not in source, "SYSTEM_PROMPT must not contain literal placeholder <q3>"
+    # Must explicitly tell the model NOT to use angle brackets
+    assert "NO angle brackets" in source or "no angle brackets" in source, \
+        "SYSTEM_PROMPT must explicitly forbid angle brackets around suggestions"
 
 
 def test_suggest_marker_present_in_prompt():

@@ -25,10 +25,22 @@ describe("parseAnswer", () => {
     expect(result.suggestions).toBeUndefined();
   });
 
+  it("filters out angle-bracket wrapped questions (regression: issue #11)", () => {
+    const raw = "Some answer.|||SUGGEST: <What are the admission requirements?> | <Who are the faculty?> | <How do I apply?>";
+    const result = parseAnswer(raw);
+    expect(result.suggestions).toBeUndefined();
+  });
+
   it("filters mixed real + placeholder suggestions, keeping only real ones", () => {
     const raw = "Answer.|||SUGGEST: <q1> | What is the GPA requirement? | <q3>";
     const result = parseAnswer(raw);
     expect(result.suggestions).toEqual(["What is the GPA requirement?"]);
+  });
+
+  it("keeps real questions that happen to contain angle brackets mid-text", () => {
+    const raw = "Answer.|||SUGGEST: What GPA is required for grad school?";
+    const result = parseAnswer(raw);
+    expect(result.suggestions).toEqual(["What GPA is required for grad school?"]);
   });
 
   it("caps suggestions at 3", () => {
