@@ -210,7 +210,7 @@ def _history_messages(history: list[dict] | None) -> list[dict]:
     return out
 
 
-ROUTER_PROMPT = """\
+ROUTER_PROMPT = """
 You are the query router for the TAMU ECE department chatbot. Read the \
 conversation and the user's latest message, then output STRICT JSON only — no \
 prose, no markdown fences:
