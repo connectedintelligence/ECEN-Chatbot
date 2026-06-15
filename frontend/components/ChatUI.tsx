@@ -2,6 +2,11 @@
 
 import { useState, useRef, useEffect, FormEvent } from "react";
 import { Send, Square, User, ExternalLink, RefreshCw, Flag, X, Check, ThumbsUp, ThumbsDown } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import { parseAnswer } from "../lib/parseAnswer";
+
+interface Source { url: string; title: string; section: string; }
+interface Message { role: "user" | "assistant"; content: string; sources?: Source[]; suggestions?: string[]; feedback?: "up" | "down"; loading?: boolean; }
 
 /** EIRA — ECE Information & Resource Assistant — illustrated avatar (frontend/public/ellie-avatar.png). */
 function EllieAvatar({ size = 30 }: { size?: number }) {
@@ -15,12 +20,6 @@ function EllieAvatar({ size = 30 }: { size?: number }) {
     />
   );
 }
-import ReactMarkdown from "react-markdown";
-
-interface Source { url: string; title: string; section: string; }
-interface Message { role: "user" | "assistant"; content: string; sources?: Source[]; suggestions?: string[]; feedback?: "up" | "down"; loading?: boolean; }
-
-import { parseAnswer } from "../lib/parseAnswer";
 
 const MAROON = "#500000";
 const BG = "#ffffff";
