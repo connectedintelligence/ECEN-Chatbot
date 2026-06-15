@@ -38,17 +38,46 @@ by research area" queries so enumerations aren't capped or cut off.
 
 ## How to verify a change
 - **Python compiles:** `python -m py_compile backend/*.py crawler/*.py`
-- The Codex sandbox has **no network access** by default, so `npm install` /
-  `npm run build` and any DB connection will not work in CI. Rely on static
-  reasoning + `py_compile` to validate; note in your summary anything that needs
-  a human to run locally.
+- **Frontend tests run as a CI gate (`npm test`).** A fix is not done until the
+  suite passes. If your change is frontend-facing, add or update a test under
+  `frontend/__tests__/` and make sure the whole suite is green — a fix that
+  can't pass the gate will never reach a PR.
+- DB connections and `npm run build` may not work in the sandbox (no DB, slow/no
+  network for a full build). For those, rely on static reasoning + `py_compile`
+  and note in your summary what a human must run locally. **This does NOT apply
+  to `npm test`** — that gate runs, so treat it as a real check you must satisfy.
 - Changes to `retriever.py`, `generator.py`, or `graph_retriever.py` can affect
   roster injection / answer completeness — reason about those paths carefully.
 - DB config lives in `.env` (NOT committed). Dockerized pgvector runs on host port
   **5433**. Don't hardcode credentials.
 
+## Frontend test harness (read before writing a frontend test)
+- Config is **`frontend/jest.config.js`** (plain JS on purpose — a `.ts` config
+  needs `ts-node`, which is not a dependency). Do not convert it back to `.ts`.
+- The setup key is **`setupFilesAfterEnv`** (NOT `setupFilesAfterFramework`,
+  which is silently ignored). It loads `jest.setup.ts` →
+  `@testing-library/jest-dom`, which provides matchers like `toBeDisabled` and
+  `toBeInTheDocument`. If those matchers are "not a function", the setup file
+  isn't loading — fix the config, don't work around it.
+- Component tests use `@testing-library/react` + `@testing-library/dom` (a
+  required peer dep, kept in `devDependencies`). If a render test fails with
+  "Cannot find module '@testing-library/dom'", add the missing dep — don't
+  delete the test.
+- Prefer testing small presentational components in their own file (e.g.
+  `components/FeedbackButtons.tsx`) so tests don't drag in heavy ESM deps.
+
+## Self-check before you finish
+1. Run `npm test` in `frontend/` (and `py_compile` for backend changes). The
+   suite must be green, including any test you added.
+2. If the harness itself is broken or missing a dependency, **fixing it is in
+   scope** — a "frontend-only, zero-risk" framing is not a reason to leave a
+   broken test gate in place.
+
 ## Guardrails
-- Make the **smallest correct fix**. Edit files in the working tree only.
+- Make the **smallest correct fix** — but "smallest" includes any test-infra or
+  dependency repair needed to make the fix verifiable. Don't scope yourself out
+  of fixing the harness.
+- Edit files in the working tree only.
 - Do NOT run git, push, or open PRs — the workflow does that and a human merges.
 - Never write `.env`, API keys, DSNs, or model weight files.
 

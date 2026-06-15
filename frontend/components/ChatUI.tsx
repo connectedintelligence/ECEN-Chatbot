@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect, FormEvent } from "react";
-import { Send, Square, User, ExternalLink, RefreshCw, Flag, X, Check, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Send, Square, User, ExternalLink, RefreshCw, Flag, X, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { parseAnswer } from "../lib/parseAnswer";
+import { FeedbackButtons } from "./FeedbackButtons";
 
 interface Source { url: string; title: string; section: string; }
 interface Message { role: "user" | "assistant"; content: string; sources?: Source[]; suggestions?: string[]; feedback?: "up" | "down"; loading?: boolean; }
@@ -201,7 +202,8 @@ export default function ChatUI() {
 
   function sendFeedback(i: number, rating: "up" | "down") {
     const msg = messages[i];
-    if (!msg || msg.feedback) return;
+    // No-op only when re-clicking the SAME rating; allow switching up<->down (issue #15).
+    if (!msg || msg.feedback === rating) return;
     const q = [...messages.slice(0, i)].reverse().find(m => m.role === "user")?.content ?? "";
     setMessages(prev => { const u = [...prev]; u[i] = { ...u[i], feedback: rating }; return u; });
     fetch("/api/feedback", {
@@ -297,17 +299,7 @@ export default function ChatUI() {
                 </div>
                 {/* Feedback + follow-up chips, once the answer is complete */}
                 {msg.role === "assistant" && !msg.loading && msg.content && !(streaming && i === messages.length - 1) && (
-                  <div style={{ display: "flex", gap: "6px", marginTop: "6px", paddingLeft: "4px", alignItems: "center" }}>
-                    <button onClick={() => sendFeedback(i, "up")} title="Good answer" disabled={!!msg.feedback}
-                      style={{ background: "none", border: "none", cursor: msg.feedback ? "default" : "pointer", color: msg.feedback === "up" ? "#15803d" : "#9ca3af", padding: "2px" }}>
-                      <ThumbsUp size={14} />
-                    </button>
-                    <button onClick={() => sendFeedback(i, "down")} title="Bad answer" disabled={!!msg.feedback}
-                      style={{ background: "none", border: "none", cursor: msg.feedback ? "default" : "pointer", color: msg.feedback === "down" ? "#b91c1c" : "#9ca3af", padding: "2px" }}>
-                      <ThumbsDown size={14} />
-                    </button>
-                    {msg.feedback && <span style={{ fontSize: "0.7rem", color: "#9ca3af" }}>Thanks for the feedback!</span>}
-                  </div>
+                  <FeedbackButtons feedback={msg.feedback} onRate={(r) => sendFeedback(i, r)} />
                 )}
                 {msg.suggestions && msg.suggestions.length > 0 && i === messages.length - 1 && !streaming && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "10px" }}>
