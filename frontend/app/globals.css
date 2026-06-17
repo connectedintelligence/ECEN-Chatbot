@@ -43,3 +43,10 @@ html, body { overflow: hidden; overscroll-behavior: none; }
   height: 100vh;
   height: 100dvh;
 }
+
+/* Landing page: same fixed viewport but scrollable inside so content
+   isn't clipped on short/mobile screens. */
+.landing-viewport {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}

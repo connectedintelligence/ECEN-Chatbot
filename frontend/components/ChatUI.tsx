@@ -217,7 +217,9 @@ export default function ChatUI() {
 
   /* ── LANDING ── */
   if (!hasMessages) return (
-    <div className="app-viewport" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: "100%", backgroundColor: "#f6f6f7", fontFamily: "system-ui, sans-serif", padding: "2rem 1rem", boxSizing: "border-box" }}>
+    <div className="app-viewport landing-viewport" style={{ backgroundColor: "#f6f6f7", fontFamily: "system-ui, sans-serif" }}>
+    {/* Inner wrapper: centers on tall screens, stacks naturally on short/mobile ones */}
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100%", padding: "2rem 1rem", boxSizing: "border-box", width: "100%" }}>
 
       {/* Avatar + title */}
       <div style={{ marginBottom: "1rem" }}><EllieAvatar size={80} /></div>
@@ -284,7 +286,6 @@ export default function ChatUI() {
       </div>
 
       <div style={{ marginTop: "1.5rem" }}>{reportButton}</div>
-      {reportModal}
 
       <style>{`
         @keyframes dqFadeUp {
@@ -303,6 +304,8 @@ export default function ChatUI() {
           .example-grid { grid-template-columns: 1fr !important; }
         }
       `}</style>
+    </div>{/* end inner centering wrapper */}
+    {reportModal}
     </div>
   );
 
