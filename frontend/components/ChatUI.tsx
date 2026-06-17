@@ -37,13 +37,13 @@ const SECTION_COLORS: Record<string, { bg: string; color: string }> = {
   about:      { bg: "#f3f4f6", color: "#4b5563" },
 };
 
-const DEFAULT_QUESTIONS = [
-  "Who are the AI & machine learning faculty?",
-  "What graduate programs does TAMU ECE offer?",
-  "How do I apply to the ECE PhD program?",
-  "Which professors work on cybersecurity?",
-  "What scholarships are available for ECE students?",
-  "Tell me about the Energy & Power research group.",
+const EXAMPLE_CARDS = [
+  { icon: "🔬", category: "Research",   question: "What research areas does TAMU ECE specialize in?",    iconBg: "#ede9fe" },
+  { icon: "👩‍🏫", category: "Faculty",    question: "Who are the AI & machine learning researchers?",       iconBg: "#dbeafe" },
+  { icon: "🎓", category: "Programs",   question: "What MS and PhD programs does TAMU ECE offer?",        iconBg: "#dcfce7" },
+  { icon: "📋", category: "Admissions", question: "How do I apply to the ECE graduate program?",          iconBg: "#fef3c7" },
+  { icon: "🔐", category: "Security",   question: "Which professors work on cybersecurity research?",     iconBg: "#fee2e2" },
+  { icon: "💡", category: "Scholarships", question: "What scholarships are available for ECE students?",  iconBg: "#fef9c3" },
 ];
 
 export default function ChatUI() {
@@ -217,71 +217,90 @@ export default function ChatUI() {
 
   /* ── LANDING ── */
   if (!hasMessages) return (
-    <div className="app-viewport" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: "100%", backgroundColor: BG, fontFamily: "system-ui, sans-serif" }}>
+    <div className="app-viewport" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: "100%", backgroundColor: "#f6f6f7", fontFamily: "system-ui, sans-serif", padding: "2rem 1rem", boxSizing: "border-box" }}>
 
-      <div style={{ marginBottom: "1.25rem" }}><EllieAvatar size={96} /></div>
-      <h1 className="landing-title" style={{ color: "#111111", fontSize: "clamp(1.4rem, 6vw, 2.25rem)", fontWeight: 400, margin: "0 0 0.5rem", letterSpacing: "-0.02em", textAlign: "center", maxWidth: "100%", padding: "0 1rem", boxSizing: "border-box" }}>
+      {/* Avatar + title */}
+      <div style={{ marginBottom: "1rem" }}><EllieAvatar size={80} /></div>
+      <h1 className="landing-title" style={{ color: "#111111", fontSize: "clamp(1.4rem, 5vw, 2rem)", fontWeight: 600, margin: "0 0 0.4rem", letterSpacing: "-0.02em", textAlign: "center" }}>
         Howdy, I'm EIRA!
       </h1>
-      <p style={{ color: "#6b7280", fontSize: "1rem", margin: "0 0 2rem", textAlign: "center", padding: "0 1rem" }}>
-        Your guide to everything ECE at Texas A&M — ask me anything.
+      <p style={{ color: "#6b7280", fontSize: "0.95rem", margin: "0 0 1.75rem", textAlign: "center" }}>
+        Your guide to everything ECE at Texas A&M.
       </p>
 
-      <form onSubmit={onSubmit} style={{ width: "100%", maxWidth: "640px", padding: "0 1rem" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", backgroundColor: CARD, border: `1px solid ${BORDER}`, borderRadius: "999px", padding: "14px 20px", boxShadow: "0 1px 6px rgba(0,0,0,0.08)" }}>
+      {/* Search bar */}
+      <form onSubmit={onSubmit} style={{ width: "100%", maxWidth: "580px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", backgroundColor: "#ffffff", border: `1.5px solid ${BORDER}`, borderRadius: "14px", padding: "12px 16px", boxShadow: "0 2px 12px rgba(0,0,0,0.07)" }}>
           <input
             ref={inputRef}
             value={input}
             onChange={e => setInput(e.target.value)}
-            placeholder="Ask anything"
-            style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "#111111", fontSize: "1rem" }}
+            placeholder="Ask me anything about TAMU ECE…"
+            style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "#111111", fontSize: "0.95rem" }}
           />
-          <button type="submit" disabled={!input.trim()} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", borderRadius: "50%", backgroundColor: input.trim() ? MAROON : BORDER, border: "none", cursor: input.trim() ? "pointer" : "default", flexShrink: 0, transition: "background 0.2s" }}>
-            <Send size={15} color="white" />
+          <button type="submit" disabled={!input.trim()} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "34px", height: "34px", borderRadius: "9px", backgroundColor: input.trim() ? MAROON : "#e5e7eb", border: "none", cursor: input.trim() ? "pointer" : "default", flexShrink: 0, transition: "background 0.2s" }}>
+            <Send size={14} color="white" />
           </button>
         </div>
       </form>
 
-      <div className="default-questions-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "1.75rem", width: "100%", maxWidth: "640px", padding: "0 1rem", boxSizing: "border-box" }}>
-        {DEFAULT_QUESTIONS.map((q, i) => (
+      {/* Example question cards */}
+      <p style={{ fontSize: "0.72rem", color: "#9ca3af", margin: "1.75rem 0 0.75rem", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 500 }}>
+        Try asking
+      </p>
+      <div className="example-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "10px", width: "100%", maxWidth: "720px" }}>
+        {EXAMPLE_CARDS.map((card, i) => (
           <button
-            key={q}
-            onClick={() => send(q)}
-            className="dq-card"
+            key={card.question}
+            onClick={() => send(card.question)}
+            className="ex-card"
             style={{
-              textAlign: "left",
-              padding: "12px 14px",
+              display: "flex", flexDirection: "column", alignItems: "flex-start",
+              gap: "10px", padding: "14px 14px 13px",
               borderRadius: "14px",
-              backgroundColor: CARD,
-              border: `1px solid ${BORDER}`,
-              color: "#374151",
-              fontSize: "0.82rem",
-              lineHeight: 1.45,
-              cursor: "pointer",
-              fontFamily: "inherit",
-              animation: `dqFadeUp 0.45s ease both`,
-              animationDelay: `${i * 80}ms`,
+              backgroundColor: "#ffffff",
+              border: "1px solid rgba(0,0,0,0.07)",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.04), 0 4px 10px rgba(0,0,0,0.04)",
+              cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+              animation: "dqFadeUp 0.45s ease both",
+              animationDelay: `${i * 55}ms`,
+              transition: "box-shadow 0.18s, border-color 0.18s, transform 0.18s",
             }}
           >
-            {q}
+            {/* Icon badge */}
+            <span style={{ fontSize: "18px", width: "36px", height: "36px", borderRadius: "10px", backgroundColor: card.iconBg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              {card.icon}
+            </span>
+            {/* Category label */}
+            <span style={{ fontSize: "0.68rem", color: "#9ca3af", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", lineHeight: 1 }}>
+              {card.category}
+            </span>
+            {/* Question text */}
+            <span style={{ fontSize: "0.82rem", color: "#111111", lineHeight: 1.45, fontWeight: 400 }}>
+              {card.question}
+            </span>
           </button>
         ))}
       </div>
 
       <div style={{ marginTop: "1.5rem" }}>{reportButton}</div>
       {reportModal}
+
       <style>{`
         @keyframes dqFadeUp {
           from { opacity: 0; transform: translateY(14px); }
           to   { opacity: 1; transform: translateY(0); }
         }
-        .dq-card:hover {
-          background-color: ${MAROON} !important;
-          color: white !important;
-          border-color: ${MAROON} !important;
+        .ex-card:hover {
+          box-shadow: 0 4px 16px rgba(80,0,0,0.12) !important;
+          border-color: rgba(80,0,0,0.25) !important;
+          transform: translateY(-2px);
         }
-        @media (max-width: 480px) {
-          .default-questions-grid { grid-template-columns: 1fr !important; }
+        @media (max-width: 600px) {
+          .example-grid { grid-template-columns: 1fr 1fr !important; }
+        }
+        @media (max-width: 380px) {
+          .example-grid { grid-template-columns: 1fr !important; }
         }
       `}</style>
     </div>
