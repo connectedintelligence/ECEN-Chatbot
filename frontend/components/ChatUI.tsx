@@ -37,13 +37,13 @@ const SECTION_COLORS: Record<string, { bg: string; color: string }> = {
   about:      { bg: "#f3f4f6", color: "#4b5563" },
 };
 
-const TOPICS = [
-  { label: "Research areas",     prompt: "What research areas does TAMU ECE specialize in?" },
-  { label: "Faculty",            prompt: "Who are the faculty members in TAMU ECE?" },
-  { label: "Graduate programs",  prompt: "What graduate programs are offered in TAMU ECE?" },
-  { label: "Admissions",         prompt: "How do I apply to TAMU ECE?" },
-  { label: "Patents",            prompt: "What patents has TAMU ECE filed?" },
-  { label: "Scholarships",       prompt: "What scholarships and financial aid are available?" },
+const DEFAULT_QUESTIONS = [
+  "Who are the AI & machine learning faculty?",
+  "What graduate programs does TAMU ECE offer?",
+  "How do I apply to the ECE PhD program?",
+  "Which professors work on cybersecurity?",
+  "What scholarships are available for ECE students?",
+  "Tell me about the Energy & Power research group.",
 ];
 
 export default function ChatUI() {
@@ -242,20 +242,48 @@ export default function ChatUI() {
         </div>
       </form>
 
-      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "10px", marginTop: "1.5rem", maxWidth: "640px", padding: "0 1rem" }}>
-        {TOPICS.map(t => (
-          <button key={t.label} onClick={() => send(t.prompt)}
-            style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 16px", borderRadius: "999px", backgroundColor: CARD, border: `1px solid ${BORDER}`, color: "#111111", fontSize: "0.875rem", cursor: "pointer" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = MAROON; (e.currentTarget as HTMLButtonElement).style.color = "white"; (e.currentTarget as HTMLButtonElement).style.borderColor = MAROON; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = CARD; (e.currentTarget as HTMLButtonElement).style.color = "#111111"; (e.currentTarget as HTMLButtonElement).style.borderColor = BORDER; }}
+      <div className="default-questions-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginTop: "1.75rem", width: "100%", maxWidth: "640px", padding: "0 1rem", boxSizing: "border-box" }}>
+        {DEFAULT_QUESTIONS.map((q, i) => (
+          <button
+            key={q}
+            onClick={() => send(q)}
+            className="dq-card"
+            style={{
+              textAlign: "left",
+              padding: "12px 14px",
+              borderRadius: "14px",
+              backgroundColor: CARD,
+              border: `1px solid ${BORDER}`,
+              color: "#374151",
+              fontSize: "0.82rem",
+              lineHeight: 1.45,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              animation: `dqFadeUp 0.45s ease both`,
+              animationDelay: `${i * 80}ms`,
+            }}
           >
-            {t.label}
+            {q}
           </button>
         ))}
       </div>
 
-      <div style={{ marginTop: "1.75rem" }}>{reportButton}</div>
+      <div style={{ marginTop: "1.5rem" }}>{reportButton}</div>
       {reportModal}
+      <style>{`
+        @keyframes dqFadeUp {
+          from { opacity: 0; transform: translateY(14px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .dq-card:hover {
+          background-color: ${MAROON} !important;
+          color: white !important;
+          border-color: ${MAROON} !important;
+        }
+        @media (max-width: 480px) {
+          .default-questions-grid { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
     </div>
   );
 
@@ -369,7 +397,21 @@ export default function ChatUI() {
       </div>
 
       {reportModal}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes dqFadeUp {
+          from { opacity: 0; transform: translateY(14px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .dq-card:hover {
+          background-color: ${MAROON} !important;
+          color: white !important;
+          border-color: ${MAROON} !important;
+        }
+        @media (max-width: 480px) {
+          .default-questions-grid { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
     </div>
   );
 }
