@@ -432,7 +432,8 @@ _IDENTITY_CHUNK = {
 }
 
 
-async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None) -> list[dict]:
+async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None,
+                          prefetched: Optional[list] = None) -> list[dict]:
     """Assemble the context chunks for a question.
 
     Dispatch order: the LLM route (intent + topic) when available, falling back
@@ -516,7 +517,8 @@ async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None) -> l
                        if c["url"] not in seen and not seen.add(c["url"])]
             return [roster_chunk] + deduped
 
-    chunks = await retrieve_async(req.question, section_filter=req.section_filter)
+    chunks = (prefetched if prefetched is not None
+              else await retrieve_async(req.question, section_filter=req.section_filter))
     if not chunks:
         return []
     graph_ctx = graph_query(req.question)
@@ -531,27 +533,53 @@ def _history_dicts(req: "ChatRequest") -> list[dict]:
     return [{"role": t.role, "content": t.content} for t in (req.history or [])]
 
 
-async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict]]:
-    """Resolve the question through the LLM router (rewrite + intent + topic).
+async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict], Optional[list]]:
+    """Resolve intent + kick off retrieval concurrently.
 
-    Returns (search_req, route). search_req carries the standalone question for
-    retrieval; route drives intent dispatch in _prepare_chunks. route is None
-    when the router fails — callers then fall back to the keyword heuristics,
-    so the system degrades to its old behavior, never below it. The creator
-    regex stays as a zero-cost fast path for its unambiguous phrasings.
+    Returns (search_req, route, prefetched_chunks).
+
+    Router and retrieval run in parallel via asyncio.gather so neither blocks
+    the other. For the common "general" intent the retrieval is already done by
+    the time the router returns — saving the full router call (~0.5-2s) from
+    the critical path. For follow-up questions the router rewrites the
+    standalone question, making the prefetch suboptimal; in that case we
+    discard it and let _prepare_chunks re-retrieve with the better query.
     """
+    import asyncio
+
     if _is_creator_question(req.question):
         return req, {"intent": "creator", "standalone_question": req.question,
-                     "topic": None}
-    route = await route_question(req.question, _history_dicts(req),
-                                 research_area_names())
+                     "topic": None}, None
+
+    route_task = asyncio.create_task(
+        route_question(req.question, _history_dicts(req), research_area_names())
+    )
+    retrieve_task = asyncio.create_task(
+        retrieve_async(req.question, req.section_filter)
+    )
+
+    route, prefetched = await asyncio.gather(route_task, retrieve_task,
+                                             return_exceptions=True)
+
+    if isinstance(route, Exception):
+        log.warning("Router failed: %s", route)
+        route = None
+    if isinstance(prefetched, Exception):
+        log.warning("Prefetch retrieval failed: %s", prefetched)
+        prefetched = None
+
     if not route:
-        return req, None
-    sq = route["standalone_question"]
-    if sq != req.question:
+        return req, None, prefetched
+
+    sq = (route.get("standalone_question") or "").strip()
+    if sq and sq != req.question:
+        # Follow-up question: router rewrote it. The prefetch used the original
+        # wording — discard it so _prepare_chunks re-retrieves with the better query.
         req = ChatRequest(question=sq, section_filter=req.section_filter,
                           history=req.history)
-    return req, route
+        prefetched = None
+
+    return req, route, prefetched
 
 
 @app.post("/chat", summary="Streaming chat (Server-Sent Events)")
@@ -565,7 +593,7 @@ async def chat_stream(request: Request, req: ChatRequest):
         return _canned_stream(_REFUSAL_TEXT)
 
     history = _history_dicts(req)
-    search_req, route = await _route(req)
+    search_req, route, prefetched = await _route(req)
 
     # LLM-detected injection / jailbreak / exfiltration attempt.
     if route and route.get("suspicious"):
@@ -584,7 +612,7 @@ async def chat_stream(request: Request, req: ChatRequest):
                    cached_sources, answer, flagged="cache_hit")
             return _canned_stream(answer, cached_sources)
 
-    chunks = _gate_context(await _prepare_chunks(search_req, route))
+    chunks = _gate_context(await _prepare_chunks(search_req, route, prefetched=prefetched))
     if not chunks:
         _audit(request, req.question, search_req.question, route, [],
                _NO_INFO_TEXT, flagged="no_reliable_context")
@@ -671,13 +699,13 @@ async def chat_sync(request: Request, req: ChatRequest):
         return ChatResponse(answer=_REFUSAL_TEXT, sources=[])
 
     history = _history_dicts(req)
-    search_req, route = await _route(req)
+    search_req, route, prefetched = await _route(req)
     if route and route.get("suspicious"):
         _audit(request, req.question, search_req.question, route, [],
                _REFUSAL_TEXT, flagged="injection_llm")
         return ChatResponse(answer=_REFUSAL_TEXT, sources=[])
 
-    chunks = _gate_context(await _prepare_chunks(search_req, route))
+    chunks = _gate_context(await _prepare_chunks(search_req, route, prefetched=prefetched))
     if not chunks:
         _audit(request, req.question, search_req.question, route, [],
                _NO_INFO_TEXT, flagged="no_reliable_context")

@@ -135,8 +135,8 @@ def _get_client() -> AsyncOpenAI:
 # tokens thinking before any visible answer, so the cap must be generous or the
 # visible answer gets truncated mid-sentence. We also detect a "length" stop and
 # continue automatically (see generate()).
-MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "10000"))
-MAX_CONTINUATIONS = int(os.getenv("LLM_MAX_CONTINUATIONS", "3"))
+MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "1500"))
+MAX_CONTINUATIONS = int(os.getenv("LLM_MAX_CONTINUATIONS", "1"))
 # Low temperature → more deterministic, exact answers grounded in the context.
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 
