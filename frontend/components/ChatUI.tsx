@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, FormEvent } from "react";
-import { Send, Square, User, ExternalLink, RefreshCw, Flag, X, Check } from "lucide-react";
+import { Send, Square, User, ExternalLink, RefreshCw, Flag, X, Check, ArrowLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { parseAnswer } from "../lib/parseAnswer";
 import { FeedbackButtons } from "./FeedbackButtons";
@@ -316,6 +316,15 @@ export default function ChatUI() {
       {/* Header */}
       <div className="chat-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 24px", borderBottom: `1px solid ${BORDER}`, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <button
+            onClick={() => setMessages([])}
+            title="Back to home"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "32px", height: "32px", borderRadius: "8px", backgroundColor: "transparent", border: `1px solid ${BORDER}`, cursor: "pointer", color: "#6b7280", flexShrink: 0, transition: "background 0.15s" }}
+            onMouseEnter={e => (e.currentTarget.style.backgroundColor = "#f3f4f6")}
+            onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
+          >
+            <ArrowLeft size={16} />
+          </button>
           <EllieAvatar size={36} />
           <span style={{ color: "#111111", fontWeight: 600, fontSize: "0.9rem" }}>EIRA<span className="header-tagline"> · ECE Information &amp; Resource Assistant</span></span>
           {reportButton}
