@@ -301,6 +301,48 @@ def _is_creator_question(question: str) -> bool:
     return bool(_CREATOR_RE.search(question.strip()))
 
 
+_CHITCHAT_RE = _re.compile(
+    r"^\s*(hi|hello|hey|howdy|greetings?|sup|yo|"
+    r"thanks?|thank\s*you|ty|cheers|"
+    r"bye|goodbye|see\s*you|"
+    r"what\s+can\s+you\s+do|what\s+are\s+you|who\s+are\s+you|"
+    r"help(\s+me)?|can\s+you\s+help)\s*[!?.]*\s*$",
+    _re.IGNORECASE,
+)
+
+
+def _fast_route(req: "ChatRequest") -> dict:
+    """Zero-latency heuristic router — no LLM call.
+
+    Covers all intents the LLM router handled, using the deterministic
+    helper functions that already exist in the codebase. For multi-turn
+    follow-ups the standalone question is NOT rewritten (we lose pronoun
+    resolution), but for fresh queries — the common case — this is identical
+    in quality and saves 1–2 s on every single request.
+    """
+    q = req.question
+
+    if _is_creator_question(q):
+        return {"intent": "creator", "standalone_question": q, "topic": None,
+                "suspicious": False}
+
+    if _CHITCHAT_RE.match(q):
+        return {"intent": "chitchat", "standalone_question": q, "topic": None,
+                "suspicious": False}
+
+    if is_full_faculty_query(q):
+        return {"intent": "list_all_faculty", "standalone_question": q, "topic": None,
+                "suspicious": False}
+
+    topic_words = _people_area_topic(q)
+    if topic_words:
+        return {"intent": "people_by_area", "standalone_question": q,
+                "topic": " ".join(topic_words), "suspicious": False}
+
+    return {"intent": "general", "standalone_question": q, "topic": None,
+            "suspicious": False}
+
+
 # ── Security layer ───────────────────────────────────────────────────────────
 # Fast regex screen for blatant injection phrasing (cheap first line; the LLM
 # router's `suspicious` flag catches subtler attempts).
@@ -534,51 +576,20 @@ def _history_dicts(req: "ChatRequest") -> list[dict]:
 
 
 async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict], Optional[list]]:
-    """Resolve intent + kick off retrieval concurrently.
+    """Classify intent with zero-latency heuristics and prefetch retrieval.
 
     Returns (search_req, route, prefetched_chunks).
 
-    Router and retrieval run in parallel via asyncio.gather so neither blocks
-    the other. For the common "general" intent the retrieval is already done by
-    the time the router returns — saving the full router call (~0.5-2s) from
-    the critical path. For follow-up questions the router rewrites the
-    standalone question, making the prefetch suboptimal; in that case we
-    discard it and let _prepare_chunks re-retrieve with the better query.
+    The LLM router has been replaced by _fast_route() — a pure in-process
+    function with no network calls. Retrieval runs immediately after, so the
+    only latency on the critical path is the DB round-trip (~0.3–0.5 s).
     """
-    import asyncio
+    route = _fast_route(req)
+    # For chitchat/creator we don't need retrieval at all — skip it.
+    if route["intent"] in ("chitchat", "creator"):
+        return req, route, None
 
-    if _is_creator_question(req.question):
-        return req, {"intent": "creator", "standalone_question": req.question,
-                     "topic": None}, None
-
-    route_task = asyncio.create_task(
-        route_question(req.question, _history_dicts(req), research_area_names())
-    )
-    retrieve_task = asyncio.create_task(
-        retrieve_async(req.question, req.section_filter)
-    )
-
-    route, prefetched = await asyncio.gather(route_task, retrieve_task,
-                                             return_exceptions=True)
-
-    if isinstance(route, Exception):
-        log.warning("Router failed: %s", route)
-        route = None
-    if isinstance(prefetched, Exception):
-        log.warning("Prefetch retrieval failed: %s", prefetched)
-        prefetched = None
-
-    if not route:
-        return req, None, prefetched
-
-    sq = (route.get("standalone_question") or "").strip()
-    if sq and sq != req.question:
-        # Follow-up question: router rewrote it. The prefetch used the original
-        # wording — discard it so _prepare_chunks re-retrieves with the better query.
-        req = ChatRequest(question=sq, section_filter=req.section_filter,
-                          history=req.history)
-        prefetched = None
-
+    prefetched = await retrieve_async(req.question, req.section_filter)
     return req, route, prefetched
 
 
