@@ -530,6 +530,10 @@ _SCAFFOLD = {
     "should", "i", "if", "am", "my", "reach", "out", "contact", "talk",
     "speak", "connect", "touch", "get", "someone", "anyone", "suggest",
     "recommend", "advisor", "adviser", "mentor", "email", "whom",
+    # Intersection / bridging words — structural scaffolding, not topic words.
+    "intersection", "cross", "bridge", "bridges", "between", "combine",
+    "combines", "combining", "combined", "overlap", "overlaps", "overlapping",
+    "both", "across", "span", "spans", "spanning",
 }
 
 # Common abbreviations -> the phrase actually used in faculty profiles.

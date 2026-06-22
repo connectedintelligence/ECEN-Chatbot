@@ -59,16 +59,50 @@ def _detect_intents(query: str) -> list[str]:
 
 # ── Graph traversal helpers ───────────────────────────────────────────────────
 
+# Short-form / abbreviation → canonical research area name.
+# Needed because _find_research_areas skips tokens shorter than 4 chars ("ai",
+# "ml") and because colloquial words like "control" / "controls" don't literally
+# appear in any TAMU ECE area name.
+_AREA_ALIASES: dict[str, str] = {
+    # AI / ML
+    "ai":                                     "Artificial Intelligence and Machine Learning",
+    "ml":                                     "Artificial Intelligence and Machine Learning",
+    "deep learning":                          "Artificial Intelligence and Machine Learning",
+    "neural network":                         "Artificial Intelligence and Machine Learning",
+    "neural networks":                        "Artificial Intelligence and Machine Learning",
+    # Control systems → closest area
+    "control":                                "Computer Engineering and Systems",
+    "controls":                               "Computer Engineering and Systems",
+    "control systems":                        "Computer Engineering and Systems",
+    "control theory":                         "Computer Engineering and Systems",
+    "cyber-physical":                         "Computer Engineering and Systems",
+    "cyberphysical":                          "Computer Engineering and Systems",
+    "stochastic control":                     "Computer Engineering and Systems",
+    "reinforcement learning":                 "Artificial Intelligence and Machine Learning",
+    "rl":                                     "Artificial Intelligence and Machine Learning",
+    # Security shorthand
+    "cybersecurity":                          "Security",
+    "cyber security":                         "Security",
+}
+
+
 def _find_research_areas(query: str, graph: dict) -> list[str]:
-    """Return research area names mentioned in the query."""
+    """Return research area names mentioned in the query.
+
+    Checks both keyword overlap with area names (words > 3 chars) and the
+    _AREA_ALIASES table for abbreviations / colloquial terms like 'AI' or
+    'control' that don't literally appear in any area name.
+    """
     q = query.lower()
-    matched = []
+    matched: set[str] = set()
     for area in graph["nodes"]["research_areas"]:
-        # Match on keywords in area name
         keywords = [w.lower() for w in area.split() if len(w) > 3]
         if any(kw in q for kw in keywords):
-            matched.append(area)
-    return matched
+            matched.add(area)
+    for alias, area in _AREA_ALIASES.items():
+        if alias in q and area in graph["nodes"]["research_areas"]:
+            matched.add(area)
+    return list(matched)
 
 
 def _find_faculty_by_name(query: str, graph: dict) -> list[str]:

@@ -72,6 +72,18 @@ RESEARCH_AREA_URLS = {
     "Security": "https://engineering.tamu.edu/electrical/research/security.html",
 }
 
+# ── Manual overrides ──────────────────────────────────────────────────────────
+# The graph is built from website research-area pages, which don't always reflect
+# a faculty member's full expertise. Add corrections here so they survive rebuilds.
+# Format: faculty name (must match graph key exactly) → list of extra research areas to add.
+GRAPH_OVERRIDES: dict[str, list[str]] = {
+    # P.R. Kumar: pioneer in stochastic control, reinforcement learning for control,
+    # cyber-physical systems, and networked control — clearly AI × control.
+    # The website lists him under Computer Engineering and Systems / Info Science
+    # but not under AI/ML.
+    "P.R. Kumar": ["Artificial Intelligence and Machine Learning"],
+}
+
 # ── Known degree programs ─────────────────────────────────────────────────────
 DEGREE_PROGRAMS = [
     {"name": "Bachelor of Science in Electrical Engineering", "level": "undergraduate", "type": "degree", "short": "BS EE"},
@@ -335,6 +347,24 @@ def build_graph() -> dict:
                 graph["edges"]["faculty_group_leader"].append({"faculty": name, "research_area": matched_area})
             else:
                 graph["edges"]["faculty_member_of"].append({"faculty": name, "research_area": matched_area})
+
+    # ── Apply manual overrides ────────────────────────────────────────────────
+    for faculty_name, extra_areas in GRAPH_OVERRIDES.items():
+        if faculty_name not in graph["nodes"]["faculty"]:
+            log.warning("GRAPH_OVERRIDES: faculty '%s' not found in graph — skipping", faculty_name)
+            continue
+        for area in extra_areas:
+            if area not in graph["nodes"]["research_areas"]:
+                log.warning("GRAPH_OVERRIDES: area '%s' not recognised — skipping", area)
+                continue
+            f_node = graph["nodes"]["faculty"][faculty_name]
+            if area not in f_node["research_areas"]:
+                f_node["research_areas"].append(area)
+                log.info("GRAPH_OVERRIDES: added '%s' → '%s'", faculty_name, area)
+            a_node = graph["nodes"]["research_areas"][area]
+            if faculty_name not in a_node["faculty"]:
+                a_node["faculty"].append(faculty_name)
+            graph["edges"]["faculty_member_of"].append({"faculty": faculty_name, "research_area": area})
 
     faculty_count = len(graph["nodes"]["faculty"])
     area_count = len(graph["nodes"]["research_areas"])

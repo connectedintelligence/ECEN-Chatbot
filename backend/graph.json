@@ -552,7 +552,8 @@
           "Computer Engineering and Systems",
           "Communications and Networks",
           "Information Science and Learning Systems",
-          "Security"
+          "Security",
+          "Artificial Intelligence and Machine Learning"
         ]
       },
       "Mi Lu": {
@@ -1098,7 +1099,8 @@
           "Hamid A. Toliyat",
           "Zixiang Xiong",
           "Suin Yi",
-          "Byung-Jun Yoon"
+          "Byung-Jun Yoon",
+          "P.R. Kumar"
         ]
       },
       "Biomedical Imaging, Sensing and Genomic Signal Processing": {
@@ -1953,6 +1955,10 @@
       {
         "faculty": "Zixiang Xiong",
         "research_area": "Security"
+      },
+      {
+        "faculty": "P.R. Kumar",
+        "research_area": "Artificial Intelligence and Machine Learning"
       }
     ],
     "faculty_group_leader": [
