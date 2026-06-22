@@ -51,7 +51,7 @@ async def _rewrite_query(question: str) -> str:
     }
     parts = []
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=1.5) as client:
             async with client.stream(
                 "POST", f"{TAMU_API_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {TAMU_API_KEY}", "Content-Type": "application/json"},

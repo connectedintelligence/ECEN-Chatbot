@@ -26,7 +26,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from generator import generate, generate_stream, route_question, generate as _generate_full
-from retriever import retrieve_async, _people_area_topic, _people_by_area
+from retriever import retrieve_async, _people_area_topic, _people_by_area, _get_embedder, _get_reranker
 from graph_retriever import (
     graph_query, build_area_roster, is_full_faculty_query, build_full_faculty_roster,
     faculty_roster_sources, research_area_names,
@@ -42,6 +42,17 @@ log = logging.getLogger(__name__)
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Pre-warm ML models so the first request doesn't pay the load penalty.
+    # SentenceTransformer + CrossEncoder each take 2-5s to load from disk;
+    # doing it here means the first chat message is just as fast as the rest.
+    import asyncio
+    log.info("Pre-warming embedder and reranker…")
+    await asyncio.gather(
+        asyncio.to_thread(_get_embedder),
+        asyncio.to_thread(_get_reranker),
+    )
+    log.info("Models ready.")
+
     # On Cloud Run the CPU is only allocated during requests, so the in-process
     # APScheduler won't fire reliably — set DISABLE_SCHEDULER=1 there and drive
     # /admin/reindex from Cloud Scheduler instead.
