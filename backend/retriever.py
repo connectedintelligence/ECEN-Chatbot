@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 import re
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import psycopg2
@@ -103,29 +105,32 @@ def _is_list_query(query: str) -> bool:
     return bool(_LIST_INTENT_RE.search(query or ""))
 
 # Lazy-loaded singletons
-_conn = None
+_thread_local = threading.local()   # per-thread DB connections (safe for parallel arms)
 _embedder = None
 _reranker: Optional[CrossEncoder] = None
 
 
 def _get_conn():
-    global _conn
-    if _conn is None or _conn.closed:
-        host = PG_DSN  # may contain password — log only the host:port portion
+    """Return a psycopg2 connection for the current thread.
+
+    Thread-local so the three retrieval arms (dense / keyword / fuzzy) can run
+    in parallel via ThreadPoolExecutor without sharing a single connection.
+    """
+    conn = getattr(_thread_local, "conn", None)
+    if conn is None or conn.closed:
         try:
             host_part = PG_DSN.split("@")[-1].split("/")[0]
         except Exception:
             host_part = "(unknown)"
-        log.info("Connecting to database at %s ...", host_part)
-        _conn = psycopg2.connect(PG_DSN, connect_timeout=10)
-        log.info("Database connection established.")
-        with _conn.cursor() as cur:
+        log.info("Connecting to database at %s (thread %s)…", host_part, threading.current_thread().name)
+        conn = psycopg2.connect(PG_DSN, connect_timeout=10)
+        with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            # pg_trgm powers word_similarity() for typo-tolerant keyword search.
             cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
-        _conn.commit()
-        register_vector(_conn)
-    return _conn
+        conn.commit()
+        register_vector(conn)
+        _thread_local.conn = conn
+    return conn
 
 
 def _get_device() -> str:
@@ -615,10 +620,10 @@ def _people_by_area(topic_words: list[str]) -> list[dict]:
 
 async def retrieve_async(query: str, section_filter: Optional[str] = None) -> list[dict]:
     import asyncio
-    rewritten = await _rewrite_query(query)
-    # Run the blocking retrieval pipeline (psycopg2 + cross-encoder inference)
-    # in a thread so it doesn't stall the async event loop.
-    return await asyncio.to_thread(retrieve, rewritten, section_filter, _original_query=query)
+    # Query rewrite removed: it made a full OpenAI round-trip before retrieval
+    # started, adding 0.5–1.5 s of latency on every request. The dense embedder
+    # + cross-encoder reranker handle query–passage matching well without it.
+    return await asyncio.to_thread(retrieve, query, section_filter, _original_query=query)
 
 
 def retrieve(query: str, section_filter: Optional[str] = None, _original_query: Optional[str] = None) -> list[dict]:
@@ -648,29 +653,20 @@ def retrieve(query: str, section_filter: Optional[str] = None, _original_query: 
                 return people
 
     query_vec = _embed_query(query)
-    dense_results = _dense_search(query_vec, section_filter)
 
-    # Independent full-text arm over the whole corpus, so exact-phrase matches
-    # that dense search misses still reach the cross-encoder.
-    #
-    # IMPORTANT: feed this the ORIGINAL user wording, NOT the LLM-rewritten
-    # query. The rewrite is a verbose ~30-word expansion ("Texas A&M Electrical
-    # and Computer Engineering department head / TAMU ECE chair leadership /
-    # ...") whose many common tokens (engineering, texas, computer) make the OR
-    # query match almost everything, and ts_rank's term-density scoring then
-    # buries the short, on-point chunk (e.g. Reddy's profile) below the cutoff.
-    # The user's literal words ("who is ece department head") keep the lexical
-    # arm tight and let the phrase-adjacency boost surface the right page.
+    # Run the three independent retrieval arms in parallel — each gets its own
+    # thread-local DB connection so there are no concurrency conflicts.
     kw_query = _original_query or query
-    # Two tight keyword arms — the original literal wording AND the LLM rewrite —
-    # each with its own LIMIT, instead of one diluted blob. The original keeps
-    # the phrase-adjacency boost sharp; the rewrite adds synonym/expansion recall.
-    keyword_results = _keyword_search(kw_query, section_filter)
-    rewrite_keyword_results = (
-        _keyword_search(query, section_filter) if query != kw_query else []
-    )
-    # Fuzzy (pg_trgm) arm tolerates typos: "deparment hed" still matches lexically.
-    fuzzy_results = _fuzzy_search(kw_query, section_filter)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        dense_fut  = ex.submit(_dense_search,   query_vec, section_filter)
+        kw_fut     = ex.submit(_keyword_search,  kw_query,  section_filter)
+        fuzzy_fut  = ex.submit(_fuzzy_search,    kw_query,  section_filter)
+        dense_results   = dense_fut.result()
+        keyword_results = kw_fut.result()
+        fuzzy_results   = fuzzy_fut.result()
+
+    # Rewrite keyword arm removed (rewrite itself was removed); no second arm needed.
+    rewrite_keyword_results: list[dict] = []
 
     # Merge dense + all lexical arms, de-duplicating by chunk_id.
     candidates = list(dense_results)
