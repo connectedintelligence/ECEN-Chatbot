@@ -412,76 +412,107 @@ def faculty_roster_sources() -> list[dict]:
     return out
 
 
+# Score (from retriever._people_by_area signal weights) at or above which a
+# faculty member's own profile shows their work CENTERS on the topic, not just
+# touches it. Below this they're listed as "also active". Tunable via env.
+CORE_SIGNAL_THRESHOLD = float(os.getenv("AREA_CORE_THRESHOLD", "4.0"))
+
+
 def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str | None:
-    """Layered roster for 'which professors research <area>' queries.
+    """Graded roster for 'which professors research <area>' queries.
 
-    Tier 1 (precise): faculty whose own profile literally names the topic —
-      derived from `precise_chunks` (exact-phrase people matches).
-    Tier 2 (broader): every graph research-area whose membership overlaps the
-      precise tier — so the umbrella groups the core researchers belong to are
-      surfaced without a hand-maintained topic→area synonym map. Falls back to
-      keyword-matched areas when the precise tier is empty.
+    `precise_chunks` come from retriever._people_by_area, each carrying a
+    `signal_score` (how strongly the profile reflects the topic) and
+    `signal_hits` (the specific sub-fields matched). We de-duplicate by person,
+    then grade into two tiers by signal strength:
 
-    Returns a formatted context string, or None if nothing matched.
+      • Primary  — score >= CORE_SIGNAL_THRESHOLD: work centers on the topic.
+      • Also active — cleared the precision floor but lower signal.
+
+    This replaces the old binary split (exact-umbrella-phrase = "core",
+    everyone else dumped into "broader related groups"), which collapsed the
+    core tier to one person. The department's own research-area roster is still
+    appended for completeness, but as a clearly-labeled third section rather than
+    the primary answer. Returns a formatted context string, or None.
     """
     graph = _load_graph()
     topic_label = " ".join(topic_words)
-
-    # ── Tier 1: precise, de-duplicated by person, mapped to graph display name.
     fac_nodes = graph["nodes"]["faculty"]
     graph_key_to_name = {_name_key(g): g for g in fac_nodes}
 
-    precise_display: list[str] = []
-    precise_keys: set[frozenset] = set()
+    # ── De-duplicate precise chunks by person, keeping the best score and the
+    #    union of matched sub-fields (a person's profile may span chunks).
+    by_person: dict[frozenset, dict] = {}
     for c in precise_chunks:
         disp = _display_from_title(c.get("title", ""))
         key = _name_key(disp)
-        if not key or key in precise_keys:
+        if not key:
             continue
-        precise_keys.add(key)
-        precise_display.append(graph_key_to_name.get(key, disp))
+        score = float(c.get("signal_score", 0.0) or 0.0)
+        hits = list(c.get("signal_hits", []) or [])
+        if key not in by_person:
+            by_person[key] = {
+                "name": graph_key_to_name.get(key, disp),
+                "score": score,
+                "hits": set(hits),
+            }
+        else:
+            by_person[key]["score"] = max(by_person[key]["score"], score)
+            by_person[key]["hits"].update(hits)
 
-    # ── Tier 2: broader umbrella areas.
-    # Use only areas with STRONG overlap with the precise tier — most of the
-    # core researchers must belong — so we surface the genuine umbrella groups
-    # (e.g. Communications and Networks) and not every area a prolific professor
-    # happens to touch. Threshold: at least 60% of the core, floor of 2.
+    people = sorted(by_person.values(), key=lambda p: p["score"], reverse=True)
+    primary = [p for p in people if p["score"] >= CORE_SIGNAL_THRESHOLD]
+    also_active = [p for p in people if p["score"] < CORE_SIGNAL_THRESHOLD]
+    # If nobody cleared the core bar (e.g. a small/sparse area) but we do have
+    # graded people, promote the strongest few so the answer still names a core.
+    if not primary and people:
+        primary = people[: min(5, len(people))]
+        also_active = people[len(primary):]
+
+    # ── Department's own research-area roster(s) for completeness (names only).
     areas = graph["nodes"]["research_areas"]
-    broader: dict[str, list[str]] = {}
-    if precise_keys:
-        threshold = max(2, round(0.6 * len(precise_keys)))
-        scored = []
-        for area, node in areas.items():
-            members = [m for m in node.get("faculty", []) if _name_key(m)]  # drops title-only junk
-            overlap = sum(1 for m in members if _name_key(m) in precise_keys)
-            if overlap >= threshold:
-                scored.append((overlap, area, members))
-        # Most-relevant umbrella first.
-        for _, area, members in sorted(scored, key=lambda x: -x[0]):
-            broader[area] = members
-    if not broader:  # no precise tier, or no area cleared the bar → keyword match
-        for area in _find_research_areas(topic_label, graph):
-            broader[area] = [m for m in areas[area].get("faculty", []) if _name_key(m)]
+    dept_rosters: dict[str, list[str]] = {}
+    for area in _find_research_areas(topic_label, graph):
+        members = [m for m in areas[area].get("faculty", []) if _name_key(m)]
+        if members:
+            dept_rosters[area] = members
 
-    if not precise_display and not broader:
+    if not people and not dept_rosters:
         return None
+
+    def _fmt(p: dict) -> str:
+        hits = sorted(p["hits"])
+        return f"- {p['name']}" + (f" [{', '.join(hits)}]" if hits else "")
 
     lines = [f'--- Faculty by Research Area: "{topic_label}" ---', ""]
     lines.append(
-        f'TAMU ECE has no research area named exactly "{topic_label}"; it spans the '
-        f'broader umbrella groups listed below. Present BOTH tiers in the answer.'
-        if broader and precise_display else ""
-    )
-    if precise_display:
+        f'Faculty work on "{topic_label}" at different depths. They are graded '
+        "below by how strongly their OWN faculty profile reflects this work "
+        "(the matched sub-fields are shown in brackets).")
+    lines.append("")
+    lines.append(
+        "HOW TO ANSWER: Lead with the PRIMARY researchers as the core answer — "
+        "name them and, in a few words each, their specific focus drawn from the "
+        "bracketed sub-fields. Then, more briefly, list those ALSO ACTIVE in the "
+        "area as part of broader work. Do NOT relegate the primary researchers "
+        "to a vague 'also working in the area' line, and do NOT collapse everyone "
+        "into one undifferentiated list. Include every name provided; never "
+        "invent a focus that isn't shown.")
+
+    if primary:
+        lines.append("")
+        lines.append(f"Primary researchers (work centers on {topic_label} — {len(primary)}):")
+        lines += [_fmt(p) for p in primary]
+    if also_active:
+        lines.append("")
+        lines.append(f"Also active in {topic_label} (related or applied work — {len(also_active)}):")
+        lines += [_fmt(p) for p in also_active]
+    if dept_rosters:
         lines.append("")
         lines.append(
-            f'Core researchers (their faculty profile explicitly lists "{topic_label}") '
-            f'— {len(precise_display)}:'
-        )
-        lines += [f"- {n}" for n in precise_display]
-    if broader:
-        lines.append("")
-        lines.append("Broader related research groups:")
-        for area, members in broader.items():
+            "Department's official research-area roster (for completeness — "
+            "this is the area grouping on the website, broader than the graded "
+            "lists above):")
+        for area, members in dept_rosters.items():
             lines.append(f"- {area} ({len(members)}): {', '.join(members)}")
-    return "\n".join(l for l in lines if l is not None)
+    return "\n".join(lines)
