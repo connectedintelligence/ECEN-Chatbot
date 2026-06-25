@@ -440,26 +440,53 @@ def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str
     fac_nodes = graph["nodes"]["faculty"]
     graph_key_to_name = {_name_key(g): g for g in fac_nodes}
 
-    # ── De-duplicate precise chunks by person, keeping the best score and the
-    #    union of matched sub-fields (a person's profile may span chunks).
+    # ── De-duplicate precise chunks by person, unioning their matched sub-fields
+    #    across ALL their profile chunks. The grade is then the SUM of the
+    #    distinct sub-field weights — so a researcher whose signals are split
+    #    across chunks (e.g. "artificial intelligence" in one, "deep learning" in
+    #    another) is credited for both, not graded by a single best chunk.
     by_person: dict[frozenset, dict] = {}
     for c in precise_chunks:
         disp = _display_from_title(c.get("title", ""))
         key = _name_key(disp)
         if not key:
             continue
-        score = float(c.get("signal_score", 0.0) or 0.0)
-        hits = list(c.get("signal_hits", []) or [])
+        hits = c.get("signal_hits", {}) or {}
+        if not isinstance(hits, dict):  # tolerate the old list-of-terms shape
+            hits = {t: 2.0 for t in hits}
         if key not in by_person:
             by_person[key] = {
                 "name": graph_key_to_name.get(key, disp),
-                "score": score,
-                "hits": set(hits),
+                "hits": dict(hits),
             }
         else:
-            by_person[key]["score"] = max(by_person[key]["score"], score)
-            by_person[key]["hits"].update(hits)
+            for term, w in hits.items():
+                by_person[key]["hits"][term] = max(by_person[key]["hits"].get(term, 0.0), w)
 
+    # ── Department research-area grouping (authoritative). Used as BOTH a recall
+    #    FLOOR and the completeness roster. A faculty member the department lists
+    #    in this area but whose profile uses different vocabulary (e.g. "learning
+    #    and game theory" instead of "machine learning") scores 0 on signal terms
+    #    and would otherwise vanish — so we add every area member the signals
+    #    missed at score 0, guaranteeing we never drop someone the department
+    #    itself groups here (the Shakkottai case).
+    areas = graph["nodes"]["research_areas"]
+    matched_areas = _find_research_areas(topic_label, graph)
+    dept_rosters: dict[str, list[str]] = {}
+    for area in matched_areas:
+        members = [m for m in areas[area].get("faculty", []) if _name_key(m)]
+        if not members:
+            continue
+        dept_rosters[area] = members
+        for m in members:
+            k = _name_key(m)
+            if k and k not in by_person:
+                by_person[k] = {"name": graph_key_to_name.get(k, m),
+                                "hits": {}, "score": 0.0, "dept_listed": True}
+
+    for p in by_person.values():
+        if "score" not in p:
+            p["score"] = sum(p["hits"].values())
     people = sorted(by_person.values(), key=lambda p: p["score"], reverse=True)
     primary = [p for p in people if p["score"] >= CORE_SIGNAL_THRESHOLD]
     also_active = [p for p in people if p["score"] < CORE_SIGNAL_THRESHOLD]
@@ -469,50 +496,68 @@ def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str
         primary = people[: min(5, len(people))]
         also_active = people[len(primary):]
 
-    # ── Department's own research-area roster(s) for completeness (names only).
-    areas = graph["nodes"]["research_areas"]
-    dept_rosters: dict[str, list[str]] = {}
-    for area in _find_research_areas(topic_label, graph):
-        members = [m for m in areas[area].get("faculty", []) if _name_key(m)]
-        if members:
-            dept_rosters[area] = members
+    # ── Suggested first contact: the area's group leader(s) + email. A small
+    #    topic → area → leader → contact hop so "who should I reach out to about
+    #    X" yields an actionable name, not just a list.
+    contacts: list[str] = []
+    seen_c: set[frozenset] = set()
+    for area in matched_areas:
+        for e in graph["edges"].get("faculty_group_leader", []):
+            if e.get("research_area") != area:
+                continue
+            leader = e.get("faculty")
+            k = _name_key(leader or "")
+            if not k or k in seen_c:
+                continue
+            seen_c.add(k)
+            email = (fac_nodes.get(leader, {}) or {}).get("email")
+            contacts.append(f"{leader} (leads {area})" + (f" — {email}" if email else ""))
 
     if not people and not dept_rosters:
         return None
 
     def _fmt(p: dict) -> str:
         hits = sorted(p["hits"])
-        return f"- {p['name']}" + (f" [{', '.join(hits)}]" if hits else "")
+        if hits:
+            return f"- {p['name']} [{', '.join(hits)}]"
+        tag = " (department-listed in the area)" if p.get("dept_listed") else ""
+        return f"- {p['name']}{tag}"
 
     lines = [f'--- Faculty by Research Area: "{topic_label}" ---', ""]
     lines.append(
-        f'Faculty work on "{topic_label}" at different depths. They are graded '
-        "below by how strongly their OWN faculty profile reflects this work "
-        "(the matched sub-fields are shown in brackets).")
+        f'Faculty work on "{topic_label}" at different depths. Below they are '
+        "graded by how strongly their own profile reflects this work (matched "
+        "sub-fields in brackets). Faculty the department officially lists in the "
+        "area but whose profiles use other wording are included too, marked "
+        "department-listed, so no genuine area member is dropped.")
     lines.append("")
     lines.append(
         "HOW TO ANSWER: Lead with the PRIMARY researchers as the core answer — "
-        "name them and, in a few words each, their specific focus drawn from the "
-        "bracketed sub-fields. Then, more briefly, list those ALSO ACTIVE in the "
-        "area as part of broader work. Do NOT relegate the primary researchers "
-        "to a vague 'also working in the area' line, and do NOT collapse everyone "
-        "into one undifferentiated list. Include every name provided; never "
-        "invent a focus that isn't shown.")
+        "name them and, in a few words each, their specific focus from the "
+        "bracketed sub-fields. Then list those ALSO ACTIVE (including the "
+        "department-listed faculty) more briefly. Include EVERY name provided — "
+        "do not drop the department-listed ones — but do NOT collapse the two "
+        "tiers into one undifferentiated list, and never invent a focus not "
+        "shown. If a suggested contact is given, offer it as a good first point "
+        "of contact.")
 
+    if contacts:
+        lines.append("")
+        lines.append("Suggested first contact (area group leader):")
+        lines += [f"- {c}" for c in contacts]
     if primary:
         lines.append("")
         lines.append(f"Primary researchers (work centers on {topic_label} — {len(primary)}):")
         lines += [_fmt(p) for p in primary]
     if also_active:
         lines.append("")
-        lines.append(f"Also active in {topic_label} (related or applied work — {len(also_active)}):")
+        lines.append(f"Also active in {topic_label} (related/applied or department-listed — {len(also_active)}):")
         lines += [_fmt(p) for p in also_active]
     if dept_rosters:
         lines.append("")
         lines.append(
-            "Department's official research-area roster (for completeness — "
-            "this is the area grouping on the website, broader than the graded "
-            "lists above):")
+            "Department's official research-area roster (the full area grouping "
+            "on the website):")
         for area, members in dept_rosters.items():
             lines.append(f"- {area} ({len(members)}): {', '.join(members)}")
     return "\n".join(lines)

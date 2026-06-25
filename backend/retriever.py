@@ -570,6 +570,19 @@ _URL_INJECTIONS: list[tuple[list[str], str]] = [
      "https://catalog.tamu.edu/undergraduate/engineering/electrical-computer/#coursestext"),
     (["graduate course", "graduate courses", "phd course", "ms course"],
      "https://catalog.tamu.edu/graduate/colleges-schools-interdisciplinary/engineering/electrical-computer/#coursestext"),
+    # Advisory "what should I study / take / courses for a career or topic" queries
+    # don't contain the literal word "course", so the catalog (the only source of
+    # real ECEN course numbers) was never injected and the model invented numbers.
+    # Inject BOTH catalogs for study/career/"courses-for-X" intents so any course
+    # the model cites is grounded in the actual catalog.
+    (["what should i study", "what to study", "what should i take", "what classes", "what courses",
+      "courses for", "classes for", "courses to", "study to", "career in", "career as",
+      "prepare for", "specialize", "concentrate", "focus on", "get into", "background in"],
+     "https://catalog.tamu.edu/undergraduate/engineering/electrical-computer/#coursestext"),
+    (["what should i study", "what to study", "courses for", "classes for", "study to",
+      "career in", "career as", "specialize", "concentrate", "focus on", "graduate study",
+      "phd in", "ms in", "masters in", "master's in"],
+     "https://catalog.tamu.edu/graduate/colleges-schools-interdisciplinary/engineering/electrical-computer/#coursestext"),
     (["about", "overview", "what is tamu ece", "tell me about", "mission", "department", "facts", "figures", "enrollment"],
      "https://engineering.tamu.edu/electrical/about/index.html"),
     (["facts", "figures", "enrollment", "students", "faculty count", "ranking"],
@@ -879,7 +892,10 @@ def _people_by_area(topic_words: list[str]) -> list[dict]:
         if score < MIN_SIGNAL_SCORE:
             continue
         c["signal_score"] = score
-        c["signal_hits"] = [term for term, _ in hits]
+        # term -> weight, so build_area_roster can grade a person by the SUM of
+        # their distinct sub-fields across ALL their profile chunks (a profile
+        # split across chunks would otherwise be graded by its best single chunk).
+        c["signal_hits"] = {term: w for term, w in hits}
         scored.append(c)
     scored.sort(key=lambda c: c["signal_score"], reverse=True)
     return scored[:ENUM_TOP_K]
