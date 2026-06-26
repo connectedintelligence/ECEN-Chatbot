@@ -344,6 +344,34 @@ async def route_question(question: str, history: list[dict] | None,
         return None
 
 
+# ── Course-code grounding guard (deterministic) ──────────────────────────────
+# Prompt instructions alone do NOT reliably stop a reasoning model from inventing
+# ECEN course numbers when none are in context (observed live: it obeyed the
+# guardrail on one query and ignored it on the next, fabricating the same fake
+# numbers). This is a hard, deterministic backstop: any ECEN/CSCE course code in
+# the answer that does not appear verbatim in the retrieved context is treated as
+# hallucinated, and the line citing it is dropped before it reaches the student.
+_COURSE_CODE_RE = _re_mod.compile(r"\b(?:ECEN|CSCE)\s*\d{3}\b", _re_mod.IGNORECASE)
+
+
+def _norm_course(code: str) -> str:
+    return _re_mod.sub(r"\s+", "", code).upper()
+
+
+def _grounded_course_codes(context: str) -> set:
+    return {_norm_course(m) for m in _COURSE_CODE_RE.findall(context or "")}
+
+
+def _course_line_ok(line: str, valid: set) -> bool:
+    """False if the line cites an ECEN/CSCE course code absent from the context."""
+    codes = _COURSE_CODE_RE.findall(line)
+    return all(_norm_course(c) in valid for c in codes)  # True when no codes
+
+
+def _scrub_ungrounded_courses(text: str, valid: set) -> str:
+    return "\n".join(ln for ln in text.split("\n") if _course_line_ok(ln, valid))
+
+
 async def generate(question: str, chunks: list[dict], history: list[dict] | None = None) -> str:
     """Non-streaming generation via raw httpx SSE (TAMU API requires streaming).
 
@@ -376,7 +404,7 @@ async def generate(question: str, chunks: list[dict], history: list[dict] | None
                 "already written; just finish the answer, completing any list."},
         ]
 
-    result = full.strip()
+    result = _scrub_ungrounded_courses(full.strip(), _grounded_course_codes(context))
     log.info("generate() collected %d chars total: %r", len(result), result[:120])
     return result
 
@@ -419,6 +447,11 @@ async def generate_stream(question: str, chunks: list[dict],
         {"role": "user", "content": user_msg},
     ]
 
+    # Deterministic anti-hallucination guard: hold each partial line until it's
+    # complete, then drop it if it cites a course code not present in the context.
+    valid_courses = _grounded_course_codes(context)
+    line_buf = ""
+
     for attempt in range(MAX_CONTINUATIONS + 1):
         stream = await client.chat.completions.create(
             model=TAMU_MODEL,
@@ -435,7 +468,13 @@ async def generate_stream(question: str, chunks: list[dict],
             delta = choice.delta.content
             if delta:
                 passage += delta
-                yield delta
+                line_buf += delta
+                # Release only complete lines, scrubbing any that cite an
+                # ungrounded course code.
+                while "\n" in line_buf:
+                    line, line_buf = line_buf.split("\n", 1)
+                    if _course_line_ok(line, valid_courses):
+                        yield line + "\n"
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
 
@@ -447,3 +486,7 @@ async def generate_stream(question: str, chunks: list[dict],
                 "Continue exactly where you left off. Do not repeat anything "
                 "already written; just finish the answer, completing any list."},
         ]
+
+    # Flush the final partial line (scrubbed).
+    if line_buf and _course_line_ok(line_buf, valid_courses):
+        yield line_buf
