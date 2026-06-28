@@ -80,9 +80,46 @@ _AREA_ALIASES: dict[str, str] = {
     "stochastic control":                     "Computer Engineering and Systems",
     "reinforcement learning":                 "Artificial Intelligence and Machine Learning",
     "rl":                                     "Artificial Intelligence and Machine Learning",
+    "machine learning":                       "Artificial Intelligence and Machine Learning",
+    "artificial intelligence":                "Artificial Intelligence and Machine Learning",
     # Security shorthand
     "cybersecurity":                          "Security",
     "cyber security":                         "Security",
+    # Energy & power
+    "power":                                  "Energy and Power",
+    "power system":                           "Energy and Power",
+    "power systems":                          "Energy and Power",
+    "power electronics":                      "Energy and Power",
+    "energy":                                 "Energy and Power",
+    "smart grid":                             "Energy and Power",
+    "renewable energy":                       "Energy and Power",
+    # Communications & networks
+    "communications":                         "Communications and Networks",
+    "communication":                          "Communications and Networks",
+    "networks":                               "Communications and Networks",
+    "networking":                             "Communications and Networks",
+    "wireless":                               "Communications and Networks",
+    "information theory":                     "Information Science and Learning Systems",
+    # Devices / nano / EM / analog / chip
+    "nanotechnology":                         "Device Science and Nanotechnology",
+    "nanoelectronics":                        "Device Science and Nanotechnology",
+    "semiconductor":                          "Device Science and Nanotechnology",
+    "electromagnetics":                       "Electromagnetics and Microwaves",
+    "microwave":                              "Electromagnetics and Microwaves",
+    "microwaves":                             "Electromagnetics and Microwaves",
+    "antenna":                                "Electromagnetics and Microwaves",
+    "analog":                                 "Analog and Mixed Signals",
+    "mixed-signal":                           "Analog and Mixed Signals",
+    "vlsi":                                   "Computer Engineering and Systems",
+    "embedded":                               "Computer Engineering and Systems",
+    "computer architecture":                  "Computer Engineering and Systems",
+    "chip manufacturing":                     "Chip Manufacturing",
+    "semiconductor manufacturing":            "Chip Manufacturing",
+    # Biomedical
+    "biomedical":                             "Biomedical Imaging, Sensing and Genomic Signal Processing",
+    "bioinformatics":                         "Biomedical Imaging, Sensing and Genomic Signal Processing",
+    "genomic":                                "Biomedical Imaging, Sensing and Genomic Signal Processing",
+    "medical imaging":                        "Biomedical Imaging, Sensing and Genomic Signal Processing",
 }
 
 
@@ -560,4 +597,78 @@ def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str
             "on the website):")
         for area, members in dept_rosters.items():
             lines.append(f"- {area} ({len(members)}): {', '.join(members)}")
+    return "\n".join(lines)
+
+
+# ── Cross-area intersection ("faculty who work on BOTH X and Y") ──────────────
+# The single-area roster path mashes "AI and power systems" into one topic and
+# matches only the first area (AI), returning the AI list and silently dropping
+# the "power systems" constraint. This handler detects a genuine two-area query
+# and returns the faculty the department lists in BOTH areas' rosters.
+_INTERSECTION_RE = re.compile(
+    r"\b(both|intersection|combin\w+|overlap\w*|across|bridg\w+|as well as)\b", re.I)
+
+
+def _best_area_for(phrase: str) -> str | None:
+    """Map a free-text phrase to the single best-matching research area."""
+    graph = _load_graph()
+    areas = graph["nodes"]["research_areas"]
+    p = phrase.lower()
+    for alias in sorted(_AREA_ALIASES, key=len, reverse=True):
+        if alias in p and _AREA_ALIASES[alias] in areas:
+            return _AREA_ALIASES[alias]
+    ptoks = set(re.findall(r"[a-z]+", p))
+    best, best_score = None, 0
+    for a in areas:
+        atoks = {w for w in a.lower().split() if len(w) > 3}
+        score = len(ptoks & atoks)
+        if score > best_score:
+            best, best_score = a, score
+    return best
+
+
+def build_intersection_roster(question: str) -> str | None:
+    """Faculty in the graph rosters of BOTH areas named in a two-area query.
+
+    Returns a formatted context string, or None if the query isn't a clean
+    two-distinct-area intersection (so the caller falls back to the normal
+    single-area roster).
+    """
+    graph = _load_graph()
+    areas_node = graph["nodes"]["research_areas"]
+    q = (question or "").lower()
+    sides = re.split(r"\band\b|&|\+|,|/| vs\.? | versus ", q)
+    mapped: list[str] = []
+    for s in sides:
+        a = _best_area_for(s)
+        if a and a not in mapped:
+            mapped.append(a)
+    if len(mapped) < 2:
+        return None
+    mapped = mapped[:2]
+    a1, a2 = mapped
+    m1 = {_name_key(m): m for m in areas_node[a1].get("faculty", []) if _name_key(m)}
+    m2 = {_name_key(m): m for m in areas_node[a2].get("faculty", []) if _name_key(m)}
+    common = set(m1) & set(m2)
+
+    lines = [f'--- Faculty working across "{a1}" AND "{a2}" ---', ""]
+    if common:
+        names = sorted(m1[k] for k in common)
+        lines.append(
+            f"These faculty are listed by the department in BOTH {a1} and {a2} "
+            f"— i.e. they genuinely work across the two areas ({len(names)}):")
+        lines += [f"- {n}" for n in names]
+        lines.append("")
+        lines.append(
+            "HOW TO ANSWER: This is a 'works on BOTH' question — present ONLY these "
+            "cross-area faculty as the answer. Do NOT list everyone from just one of "
+            "the two areas; that would ignore the second half of the question.")
+    else:
+        lines.append(
+            f"No faculty are listed in BOTH {a1} and {a2}. State that honestly "
+            "rather than listing one area's faculty as if they answered the question. "
+            "You may add that researchers in each area sometimes collaborate.")
+        lines.append("")
+        lines.append(f"{a1} faculty: {', '.join(sorted(m1.values()))}")
+        lines.append(f"{a2} faculty: {', '.join(sorted(m2.values()))}")
     return "\n".join(lines)

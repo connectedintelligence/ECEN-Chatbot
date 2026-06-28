@@ -28,8 +28,8 @@ from slowapi.errors import RateLimitExceeded
 from generator import generate, generate_stream, route_question, generate as _generate_full
 from retriever import retrieve_async, _people_area_topic, _people_by_area, _get_embedder, _get_reranker
 from graph_retriever import (
-    graph_query, build_area_roster, is_full_faculty_query, build_full_faculty_roster,
-    faculty_roster_sources, research_area_names,
+    graph_query, build_area_roster, build_intersection_roster, is_full_faculty_query,
+    build_full_faculty_roster, faculty_roster_sources, research_area_names,
 )
 from scheduler import create_scheduler, run_reindex
 import scheduler as _scheduler
@@ -498,6 +498,14 @@ async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None,
 
     # "Whom should I reach out to about <topic>?" — any phrasing, via router.
     if intent == "people_by_area" and (route or {}).get("topic"):
+        # Two-area "works on BOTH X and Y" → intersect the two area rosters
+        # instead of collapsing to a single area and dropping the 2nd constraint.
+        inter = build_intersection_roster(req.question)
+        if inter:
+            log.info("Routed area INTERSECTION for %r", req.question)
+            return [{"url": "research-area-roster",
+                     "title": "Faculty across two research areas",
+                     "section": "graph", "text": inter, "rerank_score": 10.0}]
         topic = [w for w in (route["topic"] or "").split() if w]
         precise = _people_by_area(topic)
         roster = build_area_roster(topic, precise)
@@ -542,6 +550,12 @@ async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None,
     # phrasing matches the classic enumeration pattern).
     topic = _people_area_topic(req.question)
     if topic:
+        inter = build_intersection_roster(req.question)
+        if inter:
+            log.info("Legacy area INTERSECTION for %r", req.question)
+            return [{"url": "research-area-roster",
+                     "title": "Faculty across two research areas",
+                     "section": "graph", "text": inter, "rerank_score": 10.0}]
         precise = _people_by_area(topic)
         roster = build_area_roster(topic, precise)
         if roster:
@@ -603,8 +617,12 @@ async def chat_stream(request: Request, req: ChatRequest):
                flagged="injection_regex")
         return _canned_stream(_REFUSAL_TEXT)
 
+    import time as _t
+    _t_req = _t.perf_counter()
     history = _history_dicts(req)
     search_req, route, prefetched = await _route(req)
+    log.info("TIMING route+retrieval: %.2fs (intent=%s) for %r",
+             _t.perf_counter() - _t_req, (route or {}).get("intent"), req.question)
 
     # LLM-detected injection / jailbreak / exfiltration attempt.
     if route and route.get("suspicious"):
@@ -624,6 +642,8 @@ async def chat_stream(request: Request, req: ChatRequest):
             return _canned_stream(answer, cached_sources)
 
     chunks = _gate_context(await _prepare_chunks(search_req, route, prefetched=prefetched))
+    log.info("TIMING through prepare_chunks: %.2fs (%d chunks)",
+             _t.perf_counter() - _t_req, len(chunks))
     if not chunks:
         _audit(request, req.question, search_req.question, route, [],
                _NO_INFO_TEXT, flagged="no_reliable_context")
@@ -658,10 +678,17 @@ async def chat_stream(request: Request, req: ChatRequest):
         def _sse(text: str) -> str:
             return f"data: {text.replace(chr(10), chr(92) + 'n')}\n\n"
 
+        _llm_t0 = _t.perf_counter()
+        _ttft_logged = False
         try:
             async for delta in generate_stream(gen_question, chunks, history=history):
                 if not delta:
                     continue
+                if not _ttft_logged:
+                    log.info("TIMING LLM first token: %.2fs after retrieval done "
+                             "(%.2fs total since request)",
+                             _t.perf_counter() - _llm_t0, _t.perf_counter() - _t_req)
+                    _ttft_logged = True
                 pending += delta
                 if len(pending) > 2 * _HOLDBACK:
                     release, pending = pending[:-_HOLDBACK], pending[-_HOLDBACK:]
@@ -693,6 +720,8 @@ async def chat_stream(request: Request, req: ChatRequest):
             yield f"data: {answer.replace(chr(10), chr(92) + 'n')}\n\n"
 
         yield "data: [DONE]\n\n"
+        log.info("TIMING LLM generation: %.2fs | total request: %.2fs (%d chars)",
+                 _t.perf_counter() - _llm_t0, _t.perf_counter() - _t_req, len(answer_acc))
         if ckey and emitted > 0 and answer_acc:
             _cache_put(ckey, answer_acc, sources)
         _audit(request, req.question, search_req.question, route, sources, answer_acc)
@@ -735,8 +764,14 @@ async def chat_sync(request: Request, req: ChatRequest):
 
 @app.get("/admin/test-llm", summary="Test LLM with a minimal prompt")
 async def test_llm():
-    """Sends 'Say hello.' to the LLM and returns the raw response."""
-    import httpx, json as _json
+    """Sends a trivial prompt to the LLM and returns the answer plus timings.
+
+    This isolates the model: no retrieval, no reranking, a one-line prompt. If
+    `seconds_total` here is already large, the latency is the model/endpoint
+    itself (e.g. a reasoning model, a cold serverless backend, or network), and
+    no amount of retrieval tuning will help — the fix is the model choice.
+    """
+    import time, httpx, json as _json
     from generator import TAMU_API_URL, TAMU_API_KEY, TAMU_MODEL
     payload = {
         "model": TAMU_MODEL,
@@ -745,7 +780,9 @@ async def test_llm():
     }
     parts = []
     raw_lines = []
-    async with httpx.AsyncClient(timeout=30) as client:
+    t0 = time.perf_counter()
+    ttft = None  # time to first content token
+    async with httpx.AsyncClient(timeout=60) as client:
         async with client.stream("POST", f"{TAMU_API_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {TAMU_API_KEY}", "Content-Type": "application/json"},
                 json=payload) as resp:
@@ -758,10 +795,18 @@ async def test_llm():
                             obj = _json.loads(data)
                             text = obj["choices"][0]["delta"].get("content", "")
                             if text:
+                                if ttft is None:
+                                    ttft = round(time.perf_counter() - t0, 2)
                                 parts.append(text)
                         except Exception:
                             pass
-    return {"answer": "".join(parts), "raw_lines": raw_lines[:20]}
+    return {
+        "answer": "".join(parts),
+        "model": TAMU_MODEL,
+        "seconds_to_first_token": ttft,
+        "seconds_total": round(time.perf_counter() - t0, 2),
+        "raw_lines": raw_lines[:20],
+    }
 
 
 @app.post("/admin/reindex", summary="Manually trigger a site re-index")
