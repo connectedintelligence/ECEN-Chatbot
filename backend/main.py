@@ -30,6 +30,7 @@ from retriever import retrieve_async, _people_area_topic, _people_by_area, _get_
 from graph_retriever import (
     graph_query, build_area_roster, build_intersection_roster, is_full_faculty_query,
     build_full_faculty_roster, faculty_roster_sources, research_area_names,
+    is_degree_list_query, build_degree_roster,
 )
 from scheduler import create_scheduler, run_reindex
 import scheduler as _scheduler
@@ -230,10 +231,10 @@ async def report_issue(request: Request, req: ReportRequest):
 
 # URLs of synthetic, code-generated context chunks — excluded from cited sources.
 _SYNTHETIC_URLS = {"knowledge-graph", "research-area-roster", "faculty-roster",
-                   "about:eira"}
+                   "degree-roster", "about:eira"}
 # Roster paths supply their own already-curated, relevant source list — keep all
 # of those; only the open-ended retrieval path needs trimming.
-_ROSTER_URLS = {"research-area-roster", "faculty-roster"}
+_ROSTER_URLS = {"research-area-roster", "faculty-roster", "degree-roster"}
 # Max sources to cite on the normal retrieval path (we feed more chunks to the
 # LLM for answer completeness, but only cite the few most relevant).
 MAX_SOURCES = 6
@@ -572,6 +573,21 @@ async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None,
             deduped = [c for c in precise
                        if c["url"] not in seen and not seen.add(c["url"])]
             return [roster_chunk] + deduped
+
+    # Authoritative complete degree-program list from the graph, so the answer
+    # never drops newer programs (Microelectronics MS, certificates, minor) that
+    # a stale crawled degrees page omits.
+    if is_degree_list_query(req.question):
+        roster = build_degree_roster()
+        if roster:
+            log.info("Degree roster injected for %r", req.question)
+            return [
+                {"url": "degree-roster", "title": "TAMU ECE Degree Programs",
+                 "section": "graph", "text": roster, "rerank_score": 10.0},
+                {"url": "https://engineering.tamu.edu/electrical/academics/degrees/index.html",
+                 "title": "Degree Programs | Texas A&M University Engineering",
+                 "section": "academics", "text": "", "rerank_score": 0.0},
+            ]
 
     chunks = (prefetched if prefetched is not None
               else await retrieve_async(req.question, section_filter=req.section_filter))

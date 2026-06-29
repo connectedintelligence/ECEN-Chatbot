@@ -672,3 +672,60 @@ def build_intersection_roster(question: str) -> str | None:
         lines.append(f"{a1} faculty: {', '.join(sorted(m1.values()))}")
         lines.append(f"{a2} faculty: {', '.join(sorted(m2.values()))}")
     return "\n".join(lines)
+
+
+# ── Authoritative complete degree-program list ───────────────────────────────
+# "What programs does ECE offer?" was answered from a crawled degrees page that
+# can be stale (it dropped the Microelectronics MS, the certificates, and the
+# minor even though the graph has them). Serve the complete list straight from
+# the graph so newer programs are never missed — same pattern as the faculty
+# roster.
+def is_degree_list_query(query: str) -> bool:
+    """True for 'what degrees/programs does ECE offer' style questions."""
+    q = (query or "").lower()
+    if any(w in q for w in ("research", "course", "faculty", "professor",
+                            "scholarship", "deadline", "requirement", "apply",
+                            "admission", "tuition", "gre")):
+        return False
+    has_degree_word = any(w in q for w in (
+        "program", "degree", "major", "ms", "m.s", "phd", "ph.d", "master",
+        "doctoral", "doctorate", "certificate", "minor", "bachelor"))
+    has_ask = any(w in q for w in (
+        "offer", "available", "what", "which", "list", "all", "have",
+        "provide", "kind", "type"))
+    return has_degree_word and has_ask
+
+
+def build_degree_roster() -> str | None:
+    """Complete department degree-program list from the graph (never truncated)."""
+    graph = _load_graph()
+    degs = list(graph["nodes"]["degree_programs"].values())
+    if not degs:
+        return None
+    groups = [
+        ("Undergraduate degrees", lambda d: d["level"] == "undergraduate" and d["type"] == "degree"),
+        ("Undergraduate minor", lambda d: d["type"] == "minor"),
+        ("Graduate degrees (on campus)", lambda d: d["level"] == "graduate" and d["type"] == "degree"),
+        ("Online graduate degrees", lambda d: d["type"] == "online"),
+        ("Graduate certificates", lambda d: d["type"] == "certificate"),
+    ]
+    lines = [
+        "--- Complete TAMU ECE Degree Programs (from knowledge graph) ---",
+        "",
+        f"This is the authoritative, COMPLETE list of all {len(degs)} degree "
+        "programs, certificates, and minors the department offers. Do NOT omit "
+        "any of them and do NOT add a disclaimer about the list being incomplete.",
+        "",
+        "HOW TO ANSWER: present these grouped under the headings below, including "
+        "EVERY program in each group. If the user asked only about a subset (e.g. "
+        "'MS and PhD programs'), lead with that subset, but still include the "
+        "Microelectronics MS, the certificates, and the minor where relevant — "
+        "never silently drop them.",
+    ]
+    for heading, pred in groups:
+        items = [d for d in degs if pred(d)]
+        if items:
+            lines.append("")
+            lines.append(f"{heading}:")
+            lines += [f"- {d['name']}" for d in items]
+    return "\n".join(lines)
