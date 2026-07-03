@@ -454,6 +454,19 @@ def faculty_roster_sources() -> list[dict]:
 # touches it. Below this they're listed as "also active". Tunable via env.
 CORE_SIGNAL_THRESHOLD = float(os.getenv("AREA_CORE_THRESHOLD", "4.0"))
 
+# Areas whose research-area page tags no "Group Leader," but that have a verified
+# departmental lead by TITLE (from the person's own profile). Value: (name, role,
+# email). Verified on the department site: Krishna Narayanan's profile lists
+# "Associate Head for AI" with email krn@tamu.edu. (The graph node's email is
+# wrong — a crawl merge mixed in Rajendran's — so the correct email is pinned
+# here rather than read from the polluted node.) We surface these labeled by
+# their real title — NOT as the research-area "group leader," which the site
+# doesn't designate.
+_AREA_CONTACT_OVERRIDES: dict[str, tuple[str, str, str]] = {
+    "Artificial Intelligence and Machine Learning": (
+        "Krishna Narayanan", "Associate Head for AI", "krn@tamu.edu"),
+}
+
 
 def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str | None:
     """Graded roster for 'which professors research <area>' queries.
@@ -536,19 +549,25 @@ def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str
     # ── Suggested first contact: the area's group leader(s) + email. A small
     #    topic → area → leader → contact hop so "who should I reach out to about
     #    X" yields an actionable name, not just a list.
+    # Only the PRIMARY area's group leader — never a tangential area that merely
+    # shares a keyword (e.g. an AI query also matches "Information Science and
+    # Learning Systems" via 'learning', whose leader is Chao Tian; we must not
+    # offer him as the AI contact). If the primary area has no designated leader
+    # on the department site, show no contact rather than inventing one.
     contacts: list[str] = []
-    seen_c: set[frozenset] = set()
-    for area in matched_areas:
+    primary_area = _best_area_for(topic_label)
+    if primary_area:
         for e in graph["edges"].get("faculty_group_leader", []):
-            if e.get("research_area") != area:
+            if e.get("research_area") != primary_area:
                 continue
             leader = e.get("faculty")
-            k = _name_key(leader or "")
-            if not k or k in seen_c:
-                continue
-            seen_c.add(k)
             email = (fac_nodes.get(leader, {}) or {}).get("email")
-            contacts.append(f"{leader} (leads {area})" + (f" — {email}" if email else ""))
+            contacts.append(f"{leader} (leads {primary_area})" + (f" — {email}" if email else ""))
+        # If the area has no designated group leader but has a verified lead by
+        # title (e.g. AI/ML → Narayanan, "Associate Head for AI"), use that.
+        if not contacts and primary_area in _AREA_CONTACT_OVERRIDES:
+            name, role, email = _AREA_CONTACT_OVERRIDES[primary_area]
+            contacts.append(f"{name} ({role})" + (f" — {email}" if email else ""))
 
     if not people and not dept_rosters:
         return None
@@ -580,7 +599,7 @@ def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str
 
     if contacts:
         lines.append("")
-        lines.append("Suggested first contact (area group leader):")
+        lines.append("Suggested first contact:")
         lines += [f"- {c}" for c in contacts]
     if primary:
         lines.append("")
