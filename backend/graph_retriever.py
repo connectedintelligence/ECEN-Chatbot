@@ -152,6 +152,36 @@ def _find_faculty_by_name(query: str, graph: dict) -> list[str]:
     return matched
 
 
+def find_faculty_mentions(text: str) -> list[str]:
+    """Graph faculty names mentioned in free text, ordered by the position of
+    their LAST mention (earliest → latest), so callers can take the most
+    recently discussed person.
+
+    Unlike _find_faculty_by_name (built for short queries), this matches only
+    the full name or the word-bounded last name (>3 chars) to avoid substring
+    false positives in long conversation-history text.
+    """
+    graph = _load_graph()
+    t = (text or "").lower()
+    if not t:
+        return []
+    found: list[tuple[int, str]] = []
+    for name in graph["nodes"]["faculty"]:
+        nl = name.lower()
+        last = nl.split()[-1]
+        pos = -1
+        patterns = [re.escape(nl)]
+        if len(last) > 3:
+            patterns.append(re.escape(last))
+        for pat in patterns:
+            for m in re.finditer(r"\b" + pat + r"\b", t):
+                pos = max(pos, m.start())
+        if pos >= 0:
+            found.append((pos, name))
+    found.sort()
+    return [n for _, n in found]
+
+
 def _format_faculty(name: str, node: dict) -> str:
     lines = [f"**{name}**"]
     if node.get("titles"):

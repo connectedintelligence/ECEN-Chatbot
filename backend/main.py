@@ -30,7 +30,7 @@ from retriever import retrieve_async, _people_area_topic, _people_by_area, _get_
 from graph_retriever import (
     graph_query, build_area_roster, build_intersection_roster, is_full_faculty_query,
     build_full_faculty_roster, faculty_roster_sources, research_area_names,
-    is_degree_list_query, build_degree_roster,
+    is_degree_list_query, build_degree_roster, find_faculty_mentions,
 )
 from scheduler import create_scheduler, run_reindex
 import scheduler as _scheduler
@@ -605,6 +605,45 @@ def _history_dicts(req: "ChatRequest") -> list[dict]:
     return [{"role": t.role, "content": t.content} for t in (req.history or [])]
 
 
+# ── Follow-up (anaphora) resolution for retrieval ────────────────────────────
+# _fast_route deliberately skips LLM query rewriting for latency, so a follow-up
+# like "did HE have any collaborators on THIS paper?" reaches retrieval with no
+# entity in it — dense/BM25 then latch onto whichever faculty page shares
+# surface vocabulary (issue #18: an award question surfaced Dr. Balog with no
+# motivation from the conversation). Deterministic, zero-latency repair: if the
+# question is anaphoric and doesn't name anyone itself, anchor the retrieval
+# query to the faculty member most recently mentioned in the conversation.
+_ANAPHORA_RE = _re.compile(
+    r"\b(he|she|him|her|his|hers|they|them|their|theirs)\b"
+    r"|\b(this|that|these|those|the\s+same)\s+"
+    r"(paper|papers|award|awards|research|work|lab|group|project|projects|"
+    r"person|professor|faculty|course|courses|area|topic|publication|publications)\b"
+    r"|^\s*(what|how)\s+about\b",
+    _re.IGNORECASE,
+)
+
+
+def _resolve_followup_question(question: str, history: list[dict]) -> str:
+    """Return `question` anchored to the person it refers to, when that can be
+    resolved deterministically from recent history; otherwise unchanged.
+
+    Only rewrites when (a) there IS history, (b) the question is anaphoric,
+    and (c) the question itself names no faculty member — so fresh, fully
+    specified questions are never touched.
+    """
+    if not history or not _ANAPHORA_RE.search(question):
+        return question
+    if find_faculty_mentions(question):
+        return question
+    for turn in reversed(history):
+        names = find_faculty_mentions(turn.get("content", ""))
+        if names:
+            resolved = f"{question} (referring to {names[-1]})"
+            log.info("Follow-up resolved to %r", names[-1])
+            return resolved
+    return question
+
+
 async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict], Optional[list]]:
     """Classify intent with zero-latency heuristics and prefetch retrieval.
 
@@ -619,8 +658,16 @@ async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict], Opt
     if route["intent"] in ("chitchat", "creator"):
         return req, route, None
 
-    prefetched = await retrieve_async(req.question, req.section_filter)
-    return req, route, prefetched
+    # Anchor anaphoric follow-ups ("did he…", "this paper…") to the person the
+    # conversation is actually about before retrieval, so dense/BM25 search has
+    # an entity to match instead of latching onto an arbitrary faculty page.
+    resolved = _resolve_followup_question(req.question, _history_dicts(req))
+    search_req = req if resolved == req.question else req.model_copy(
+        update={"question": resolved})
+    route["standalone_question"] = resolved
+
+    prefetched = await retrieve_async(search_req.question, req.section_filter)
+    return search_req, route, prefetched
 
 
 @app.post("/chat", summary="Streaming chat (Server-Sent Events)")
