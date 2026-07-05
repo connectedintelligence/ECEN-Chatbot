@@ -235,17 +235,28 @@ def _build_metrics(case: dict, has_context: bool) -> list:
         metrics.append(GEval(
             name="Conversational Grounding",
             evaluation_steps=[
-                "Read the conversation history embedded in the input.",
-                "Determine which person or entity the current question's "
-                "pronouns/references ('he', 'she', 'this paper', 'this topic') "
-                "point to, based on that history.",
-                "Check the response is about THAT person/entity. Heavily "
-                "penalize a response that pivots to a different named person "
-                "with no motivation from the conversation.",
-                "Saying the information isn't available FOR THE CORRECT person "
-                "is acceptable; if no referent exists in the history, asking "
-                "for clarification (or answering without inventing a person) "
-                "is the correct behavior.",
+                "First decide whether the CURRENT question actually depends on "
+                "the conversation history: does it contain pronouns or "
+                "references ('he', 'she', 'this paper', 'this topic') that "
+                "need the history to resolve? If the question is fully "
+                "self-contained (e.g. 'What degree programs are offered?'), "
+                "IGNORE the history entirely and score HIGH as long as the "
+                "response answers the question that was asked.",
+                "If the question IS anaphoric, determine which person/entity "
+                "its references point to based on the history, and check the "
+                "response is about THAT person/entity. Score very LOW only if "
+                "the response pivots to a DIFFERENT named person with no "
+                "motivation from the conversation.",
+                "An honest statement that the information isn't available for "
+                "the CORRECT person scores fully — do not penalize brevity or "
+                "a suggestion of where to find more (email, website); that is "
+                "good behavior, not a failure to answer.",
+                "If the question is anaphoric but NO referent exists anywhere "
+                "in the history, the correct behavior is to decline, ask for "
+                "clarification, or give a generic 'I don't have those details' "
+                "response — score that HIGH. Score very LOW only if the "
+                "response invents or picks a specific named person without "
+                "basis.",
             ],
             evaluation_params=[P.INPUT, P.ACTUAL_OUTPUT],
             model=JUDGE_MODEL, threshold=JUDGE_THRESHOLD,
@@ -289,7 +300,9 @@ def _build_metrics(case: dict, has_context: bool) -> list:
                 "If the question is about a person or thing that does not "
                 "exist, the response must say it has no information rather "
                 "than inventing details.",
-                "Redirecting the user to relevant ECE topics is a plus.",
+                "A brief decline without fabrication scores HIGH on its own; "
+                "redirecting the user to relevant ECE topics is a bonus, and "
+                "its absence is NOT a failure.",
             ],
             evaluation_params=[P.INPUT, P.ACTUAL_OUTPUT],
             model=JUDGE_MODEL, threshold=JUDGE_THRESHOLD,
