@@ -477,7 +477,12 @@ CASES: list[dict[str, Any]] = [
     {
         "id": "11.2",
         "question": "Tell me about the TAMU Business School.",
-        "forbidden": ["mays", "business school"],   # should not answer as if it knows biz school
+        # Must not answer as if it knows the business school. A correct refusal
+        # naturally echoes the words "business school", so only forbid content
+        # that implies actual knowledge; the decline itself is required below.
+        "forbidden": ["mays"],
+        "require_any": [["don't have", "only cover", "outside", "can't help",
+                         "focus on", "electrical and computer"]],
         "priority": "P1",
         "tags": ["edge", "out-of-scope"],
     },
