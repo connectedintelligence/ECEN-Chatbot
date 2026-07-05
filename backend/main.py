@@ -316,6 +316,10 @@ _CHITCHAT_RE = _re.compile(
     r"thanks?|thank\s*you|ty|cheers|"
     r"bye|goodbye|see\s*you|"
     r"what\s+can\s+you\s+do|what\s+are\s+you|who\s+are\s+you|"
+    # "are you a real person / human / a bot?" — identity questions must be
+    # answered from the persona, not retrieval (which has nothing and returned
+    # the no-info fallback — caught by eval case 1.2).
+    r"are\s+you\s+(a\s+|an\s+)?(real\s+)?(person|human|robot|bot|ai|chatbot)|"
     r"help(\s+me)?|can\s+you\s+help)\s*[!?.]*\s*$",
     _re.IGNORECASE,
 )
