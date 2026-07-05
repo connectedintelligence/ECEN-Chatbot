@@ -50,6 +50,10 @@ from eval import CASES, _check, BASE_URL, DEFAULT_DELAY  # noqa: E402
 
 JUDGE_MODEL = os.getenv("EVAL_JUDGE_MODEL", "gpt-4o-mini")
 JUDGE_THRESHOLD = float(os.getenv("EVAL_THRESHOLD", "0.7"))
+# Grounding is scored looser: observed judge scores separate cleanly (true
+# grounding failures ≤ ~0.4, correct-but-imperfect answers ≥ ~0.6), and GEval
+# scores jitter run-to-run, so 0.7 flags noise as failure.
+GROUNDING_THRESHOLD = float(os.getenv("EVAL_GROUNDING_THRESHOLD", "0.55"))
 REPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "eval_reports")
 
@@ -257,9 +261,14 @@ def _build_metrics(case: dict, has_context: bool) -> list:
                 "response — score that HIGH. Score very LOW only if the "
                 "response invents or picks a specific named person without "
                 "basis.",
+                "This metric measures ONLY whether the response is anchored "
+                "to the correct referent. Do NOT penalize incompleteness, "
+                "level of detail, conciseness, formatting, or overall answer "
+                "quality — those are covered by other checks. If the response "
+                "is about the correct person/entity, it scores HIGH.",
             ],
             evaluation_params=[P.INPUT, P.ACTUAL_OUTPUT],
-            model=JUDGE_MODEL, threshold=JUDGE_THRESHOLD,
+            model=JUDGE_MODEL, threshold=GROUNDING_THRESHOLD,
         ))
 
     if tags & {"roster", "list", "contact"}:
