@@ -120,6 +120,12 @@ class ChatRequest(BaseModel):
         None, max_length=10,
         description="Recent conversation turns (oldest first) so follow-up questions can be understood.",
     )
+    include_context: Optional[bool] = Field(
+        False,
+        description="Eval-only: return the retrieval context chunks with the answer "
+                    "(honored only when the server runs with EVAL_MODE=1, so "
+                    "production never exposes raw context).",
+    )
 
 
 class Source(BaseModel):
@@ -131,6 +137,9 @@ class Source(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
+    # Populated only for eval runs (include_context=true + EVAL_MODE=1); lets
+    # faithfulness metrics ground the answer against what retrieval provided.
+    context: Optional[list[str]] = None
 
 
 class FeedbackRequest(BaseModel):
@@ -822,7 +831,10 @@ async def chat_sync(request: Request, req: ChatRequest):
                for c in _select_sources(chunks)]
     _audit(request, req.question, search_req.question, route,
            [s.model_dump() for s in sources], answer)
-    return ChatResponse(answer=answer, sources=sources)
+    ctx = None
+    if req.include_context and os.getenv("EVAL_MODE"):
+        ctx = [c["text"] for c in chunks if c.get("text")]
+    return ChatResponse(answer=answer, sources=sources, context=ctx)
 
 
 @app.get("/admin/test-llm", summary="Test LLM with a minimal prompt")
