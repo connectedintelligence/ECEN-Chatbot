@@ -1,1 +1,5 @@
 pytest>=8.0
+httpx>=0.27
+# LLM-judged regression suite (scripts/deepeval_eval.py); judge = OpenAI,
+# needs OPENAI_API_KEY (or run with --no-llm for keyword checks only).
+deepeval>=4.0

@@ -80,9 +80,46 @@ _AREA_ALIASES: dict[str, str] = {
     "stochastic control":                     "Computer Engineering and Systems",
     "reinforcement learning":                 "Artificial Intelligence and Machine Learning",
     "rl":                                     "Artificial Intelligence and Machine Learning",
+    "machine learning":                       "Artificial Intelligence and Machine Learning",
+    "artificial intelligence":                "Artificial Intelligence and Machine Learning",
     # Security shorthand
     "cybersecurity":                          "Security",
     "cyber security":                         "Security",
+    # Energy & power
+    "power":                                  "Energy and Power",
+    "power system":                           "Energy and Power",
+    "power systems":                          "Energy and Power",
+    "power electronics":                      "Energy and Power",
+    "energy":                                 "Energy and Power",
+    "smart grid":                             "Energy and Power",
+    "renewable energy":                       "Energy and Power",
+    # Communications & networks
+    "communications":                         "Communications and Networks",
+    "communication":                          "Communications and Networks",
+    "networks":                               "Communications and Networks",
+    "networking":                             "Communications and Networks",
+    "wireless":                               "Communications and Networks",
+    "information theory":                     "Information Science and Learning Systems",
+    # Devices / nano / EM / analog / chip
+    "nanotechnology":                         "Device Science and Nanotechnology",
+    "nanoelectronics":                        "Device Science and Nanotechnology",
+    "semiconductor":                          "Device Science and Nanotechnology",
+    "electromagnetics":                       "Electromagnetics and Microwaves",
+    "microwave":                              "Electromagnetics and Microwaves",
+    "microwaves":                             "Electromagnetics and Microwaves",
+    "antenna":                                "Electromagnetics and Microwaves",
+    "analog":                                 "Analog and Mixed Signals",
+    "mixed-signal":                           "Analog and Mixed Signals",
+    "vlsi":                                   "Computer Engineering and Systems",
+    "embedded":                               "Computer Engineering and Systems",
+    "computer architecture":                  "Computer Engineering and Systems",
+    "chip manufacturing":                     "Chip Manufacturing",
+    "semiconductor manufacturing":            "Chip Manufacturing",
+    # Biomedical
+    "biomedical":                             "Biomedical Imaging, Sensing and Genomic Signal Processing",
+    "bioinformatics":                         "Biomedical Imaging, Sensing and Genomic Signal Processing",
+    "genomic":                                "Biomedical Imaging, Sensing and Genomic Signal Processing",
+    "medical imaging":                        "Biomedical Imaging, Sensing and Genomic Signal Processing",
 }
 
 
@@ -113,6 +150,36 @@ def _find_faculty_by_name(query: str, graph: dict) -> list[str]:
         if any(p in query.lower() for p in parts if len(p) > 3):
             matched.append(name)
     return matched
+
+
+def find_faculty_mentions(text: str) -> list[str]:
+    """Graph faculty names mentioned in free text, ordered by the position of
+    their LAST mention (earliest → latest), so callers can take the most
+    recently discussed person.
+
+    Unlike _find_faculty_by_name (built for short queries), this matches only
+    the full name or the word-bounded last name (>3 chars) to avoid substring
+    false positives in long conversation-history text.
+    """
+    graph = _load_graph()
+    t = (text or "").lower()
+    if not t:
+        return []
+    found: list[tuple[int, str]] = []
+    for name in graph["nodes"]["faculty"]:
+        nl = name.lower()
+        last = nl.split()[-1]
+        pos = -1
+        patterns = [re.escape(nl)]
+        if len(last) > 3:
+            patterns.append(re.escape(last))
+        for pat in patterns:
+            for m in re.finditer(r"\b" + pat + r"\b", t):
+                pos = max(pos, m.start())
+        if pos >= 0:
+            found.append((pos, name))
+    found.sort()
+    return [n for _, n in found]
 
 
 def _format_faculty(name: str, node: dict) -> str:
@@ -412,76 +479,302 @@ def faculty_roster_sources() -> list[dict]:
     return out
 
 
+# Score (from retriever._people_by_area signal weights) at or above which a
+# faculty member's own profile shows their work CENTERS on the topic, not just
+# touches it. Below this they're listed as "also active". Tunable via env.
+CORE_SIGNAL_THRESHOLD = float(os.getenv("AREA_CORE_THRESHOLD", "4.0"))
+
+# Areas whose research-area page tags no "Group Leader," but that have a verified
+# departmental lead by TITLE (from the person's own profile). Value: (name, role,
+# email). Verified on the department site: Krishna Narayanan's profile lists
+# "Associate Head for AI" with email krn@tamu.edu. (The graph node's email is
+# wrong — a crawl merge mixed in Rajendran's — so the correct email is pinned
+# here rather than read from the polluted node.) We surface these labeled by
+# their real title — NOT as the research-area "group leader," which the site
+# doesn't designate.
+_AREA_CONTACT_OVERRIDES: dict[str, tuple[str, str, str]] = {
+    "Artificial Intelligence and Machine Learning": (
+        "Krishna Narayanan", "Associate Head for AI", "krn@tamu.edu"),
+}
+
+
 def build_area_roster(topic_words: list[str], precise_chunks: list[dict]) -> str | None:
-    """Layered roster for 'which professors research <area>' queries.
+    """Graded roster for 'which professors research <area>' queries.
 
-    Tier 1 (precise): faculty whose own profile literally names the topic —
-      derived from `precise_chunks` (exact-phrase people matches).
-    Tier 2 (broader): every graph research-area whose membership overlaps the
-      precise tier — so the umbrella groups the core researchers belong to are
-      surfaced without a hand-maintained topic→area synonym map. Falls back to
-      keyword-matched areas when the precise tier is empty.
+    `precise_chunks` come from retriever._people_by_area, each carrying a
+    `signal_score` (how strongly the profile reflects the topic) and
+    `signal_hits` (the specific sub-fields matched). We de-duplicate by person,
+    then grade into two tiers by signal strength:
 
-    Returns a formatted context string, or None if nothing matched.
+      • Primary  — score >= CORE_SIGNAL_THRESHOLD: work centers on the topic.
+      • Also active — cleared the precision floor but lower signal.
+
+    This replaces the old binary split (exact-umbrella-phrase = "core",
+    everyone else dumped into "broader related groups"), which collapsed the
+    core tier to one person. The department's own research-area roster is still
+    appended for completeness, but as a clearly-labeled third section rather than
+    the primary answer. Returns a formatted context string, or None.
     """
     graph = _load_graph()
     topic_label = " ".join(topic_words)
-
-    # ── Tier 1: precise, de-duplicated by person, mapped to graph display name.
     fac_nodes = graph["nodes"]["faculty"]
     graph_key_to_name = {_name_key(g): g for g in fac_nodes}
 
-    precise_display: list[str] = []
-    precise_keys: set[frozenset] = set()
+    # ── De-duplicate precise chunks by person, unioning their matched sub-fields
+    #    across ALL their profile chunks. The grade is then the SUM of the
+    #    distinct sub-field weights — so a researcher whose signals are split
+    #    across chunks (e.g. "artificial intelligence" in one, "deep learning" in
+    #    another) is credited for both, not graded by a single best chunk.
+    by_person: dict[frozenset, dict] = {}
     for c in precise_chunks:
         disp = _display_from_title(c.get("title", ""))
         key = _name_key(disp)
-        if not key or key in precise_keys:
+        if not key:
             continue
-        precise_keys.add(key)
-        precise_display.append(graph_key_to_name.get(key, disp))
+        hits = c.get("signal_hits", {}) or {}
+        if not isinstance(hits, dict):  # tolerate the old list-of-terms shape
+            hits = {t: 2.0 for t in hits}
+        if key not in by_person:
+            by_person[key] = {
+                "name": graph_key_to_name.get(key, disp),
+                "hits": dict(hits),
+            }
+        else:
+            for term, w in hits.items():
+                by_person[key]["hits"][term] = max(by_person[key]["hits"].get(term, 0.0), w)
 
-    # ── Tier 2: broader umbrella areas.
-    # Use only areas with STRONG overlap with the precise tier — most of the
-    # core researchers must belong — so we surface the genuine umbrella groups
-    # (e.g. Communications and Networks) and not every area a prolific professor
-    # happens to touch. Threshold: at least 60% of the core, floor of 2.
+    # ── Department research-area grouping (authoritative). Used as BOTH a recall
+    #    FLOOR and the completeness roster. A faculty member the department lists
+    #    in this area but whose profile uses different vocabulary (e.g. "learning
+    #    and game theory" instead of "machine learning") scores 0 on signal terms
+    #    and would otherwise vanish — so we add every area member the signals
+    #    missed at score 0, guaranteeing we never drop someone the department
+    #    itself groups here (the Shakkottai case).
     areas = graph["nodes"]["research_areas"]
-    broader: dict[str, list[str]] = {}
-    if precise_keys:
-        threshold = max(2, round(0.6 * len(precise_keys)))
-        scored = []
-        for area, node in areas.items():
-            members = [m for m in node.get("faculty", []) if _name_key(m)]  # drops title-only junk
-            overlap = sum(1 for m in members if _name_key(m) in precise_keys)
-            if overlap >= threshold:
-                scored.append((overlap, area, members))
-        # Most-relevant umbrella first.
-        for _, area, members in sorted(scored, key=lambda x: -x[0]):
-            broader[area] = members
-    if not broader:  # no precise tier, or no area cleared the bar → keyword match
-        for area in _find_research_areas(topic_label, graph):
-            broader[area] = [m for m in areas[area].get("faculty", []) if _name_key(m)]
+    matched_areas = _find_research_areas(topic_label, graph)
+    dept_rosters: dict[str, list[str]] = {}
+    for area in matched_areas:
+        members = [m for m in areas[area].get("faculty", []) if _name_key(m)]
+        if not members:
+            continue
+        dept_rosters[area] = members
+        for m in members:
+            k = _name_key(m)
+            if k and k not in by_person:
+                by_person[k] = {"name": graph_key_to_name.get(k, m),
+                                "hits": {}, "score": 0.0, "dept_listed": True}
 
-    if not precise_display and not broader:
+    for p in by_person.values():
+        if "score" not in p:
+            p["score"] = sum(p["hits"].values())
+    people = sorted(by_person.values(), key=lambda p: p["score"], reverse=True)
+    primary = [p for p in people if p["score"] >= CORE_SIGNAL_THRESHOLD]
+    also_active = [p for p in people if p["score"] < CORE_SIGNAL_THRESHOLD]
+    # If nobody cleared the core bar (e.g. a small/sparse area) but we do have
+    # graded people, promote the strongest few so the answer still names a core.
+    if not primary and people:
+        primary = people[: min(5, len(people))]
+        also_active = people[len(primary):]
+
+    # ── Suggested first contact: the area's group leader(s) + email. A small
+    #    topic → area → leader → contact hop so "who should I reach out to about
+    #    X" yields an actionable name, not just a list.
+    # Only the PRIMARY area's group leader — never a tangential area that merely
+    # shares a keyword (e.g. an AI query also matches "Information Science and
+    # Learning Systems" via 'learning', whose leader is Chao Tian; we must not
+    # offer him as the AI contact). If the primary area has no designated leader
+    # on the department site, show no contact rather than inventing one.
+    contacts: list[str] = []
+    primary_area = _best_area_for(topic_label)
+    if primary_area:
+        for e in graph["edges"].get("faculty_group_leader", []):
+            if e.get("research_area") != primary_area:
+                continue
+            leader = e.get("faculty")
+            email = (fac_nodes.get(leader, {}) or {}).get("email")
+            contacts.append(f"{leader} (leads {primary_area})" + (f" — {email}" if email else ""))
+        # If the area has no designated group leader but has a verified lead by
+        # title (e.g. AI/ML → Narayanan, "Associate Head for AI"), use that.
+        if not contacts and primary_area in _AREA_CONTACT_OVERRIDES:
+            name, role, email = _AREA_CONTACT_OVERRIDES[primary_area]
+            contacts.append(f"{name} ({role})" + (f" — {email}" if email else ""))
+
+    if not people and not dept_rosters:
         return None
+
+    def _fmt(p: dict) -> str:
+        hits = sorted(p["hits"])
+        if hits:
+            return f"- {p['name']} [{', '.join(hits)}]"
+        tag = " (department-listed in the area)" if p.get("dept_listed") else ""
+        return f"- {p['name']}{tag}"
 
     lines = [f'--- Faculty by Research Area: "{topic_label}" ---', ""]
     lines.append(
-        f'TAMU ECE has no research area named exactly "{topic_label}"; it spans the '
-        f'broader umbrella groups listed below. Present BOTH tiers in the answer.'
-        if broader and precise_display else ""
-    )
-    if precise_display:
+        f'Faculty work on "{topic_label}" at different depths. Below they are '
+        "graded by how strongly their own profile reflects this work (matched "
+        "sub-fields in brackets). Faculty the department officially lists in the "
+        "area but whose profiles use other wording are included too, marked "
+        "department-listed, so no genuine area member is dropped.")
+    lines.append("")
+    lines.append(
+        "HOW TO ANSWER: Lead with the PRIMARY researchers as the core answer — "
+        "name them and, in a few words each, their specific focus from the "
+        "bracketed sub-fields. Then list those ALSO ACTIVE (including the "
+        "department-listed faculty) more briefly. Include EVERY name provided — "
+        "do not drop the department-listed ones — but do NOT collapse the two "
+        "tiers into one undifferentiated list, and never invent a focus not "
+        "shown. If a suggested contact is given, offer it as a good first point "
+        "of contact.")
+
+    if contacts:
+        lines.append("")
+        lines.append("Suggested first contact:")
+        lines += [f"- {c}" for c in contacts]
+    if primary:
+        lines.append("")
+        lines.append(f"Primary researchers (work centers on {topic_label} — {len(primary)}):")
+        lines += [_fmt(p) for p in primary]
+    if also_active:
+        lines.append("")
+        lines.append(f"Also active in {topic_label} (related/applied or department-listed — {len(also_active)}):")
+        lines += [_fmt(p) for p in also_active]
+    if dept_rosters:
         lines.append("")
         lines.append(
-            f'Core researchers (their faculty profile explicitly lists "{topic_label}") '
-            f'— {len(precise_display)}:'
-        )
-        lines += [f"- {n}" for n in precise_display]
-    if broader:
-        lines.append("")
-        lines.append("Broader related research groups:")
-        for area, members in broader.items():
+            "Department's official research-area roster (the full area grouping "
+            "on the website):")
+        for area, members in dept_rosters.items():
             lines.append(f"- {area} ({len(members)}): {', '.join(members)}")
-    return "\n".join(l for l in lines if l is not None)
+    return "\n".join(lines)
+
+
+# ── Cross-area intersection ("faculty who work on BOTH X and Y") ──────────────
+# The single-area roster path mashes "AI and power systems" into one topic and
+# matches only the first area (AI), returning the AI list and silently dropping
+# the "power systems" constraint. This handler detects a genuine two-area query
+# and returns the faculty the department lists in BOTH areas' rosters.
+_INTERSECTION_RE = re.compile(
+    r"\b(both|intersection|combin\w+|overlap\w*|across|bridg\w+|as well as)\b", re.I)
+
+
+def _best_area_for(phrase: str) -> str | None:
+    """Map a free-text phrase to the single best-matching research area."""
+    graph = _load_graph()
+    areas = graph["nodes"]["research_areas"]
+    p = phrase.lower()
+    for alias in sorted(_AREA_ALIASES, key=len, reverse=True):
+        if alias in p and _AREA_ALIASES[alias] in areas:
+            return _AREA_ALIASES[alias]
+    ptoks = set(re.findall(r"[a-z]+", p))
+    best, best_score = None, 0
+    for a in areas:
+        atoks = {w for w in a.lower().split() if len(w) > 3}
+        score = len(ptoks & atoks)
+        if score > best_score:
+            best, best_score = a, score
+    return best
+
+
+def build_intersection_roster(question: str) -> str | None:
+    """Faculty in the graph rosters of BOTH areas named in a two-area query.
+
+    Returns a formatted context string, or None if the query isn't a clean
+    two-distinct-area intersection (so the caller falls back to the normal
+    single-area roster).
+    """
+    graph = _load_graph()
+    areas_node = graph["nodes"]["research_areas"]
+    q = (question or "").lower()
+    sides = re.split(r"\band\b|&|\+|,|/| vs\.? | versus ", q)
+    mapped: list[str] = []
+    for s in sides:
+        a = _best_area_for(s)
+        if a and a not in mapped:
+            mapped.append(a)
+    if len(mapped) < 2:
+        return None
+    mapped = mapped[:2]
+    a1, a2 = mapped
+    m1 = {_name_key(m): m for m in areas_node[a1].get("faculty", []) if _name_key(m)}
+    m2 = {_name_key(m): m for m in areas_node[a2].get("faculty", []) if _name_key(m)}
+    common = set(m1) & set(m2)
+
+    lines = [f'--- Faculty working across "{a1}" AND "{a2}" ---', ""]
+    if common:
+        names = sorted(m1[k] for k in common)
+        lines.append(
+            f"These faculty are listed by the department in BOTH {a1} and {a2} "
+            f"— i.e. they genuinely work across the two areas ({len(names)}):")
+        lines += [f"- {n}" for n in names]
+        lines.append("")
+        lines.append(
+            "HOW TO ANSWER: This is a 'works on BOTH' question — present ONLY these "
+            "cross-area faculty as the answer. Do NOT list everyone from just one of "
+            "the two areas; that would ignore the second half of the question.")
+    else:
+        lines.append(
+            f"No faculty are listed in BOTH {a1} and {a2}. State that honestly "
+            "rather than listing one area's faculty as if they answered the question. "
+            "You may add that researchers in each area sometimes collaborate.")
+        lines.append("")
+        lines.append(f"{a1} faculty: {', '.join(sorted(m1.values()))}")
+        lines.append(f"{a2} faculty: {', '.join(sorted(m2.values()))}")
+    return "\n".join(lines)
+
+
+# ── Authoritative complete degree-program list ───────────────────────────────
+# "What programs does ECE offer?" was answered from a crawled degrees page that
+# can be stale (it dropped the Microelectronics MS, the certificates, and the
+# minor even though the graph has them). Serve the complete list straight from
+# the graph so newer programs are never missed — same pattern as the faculty
+# roster.
+def is_degree_list_query(query: str) -> bool:
+    """True for 'what degrees/programs does ECE offer' style questions."""
+    q = (query or "").lower()
+    if any(w in q for w in ("research", "course", "faculty", "professor",
+                            "scholarship", "deadline", "requirement", "apply",
+                            "admission", "tuition", "gre")):
+        return False
+    has_degree_word = any(w in q for w in (
+        "program", "degree", "major", "ms", "m.s", "phd", "ph.d", "master",
+        "doctoral", "doctorate", "certificate", "minor", "bachelor"))
+    has_ask = any(w in q for w in (
+        "offer", "available", "what", "which", "list", "all", "have",
+        "provide", "kind", "type"))
+    return has_degree_word and has_ask
+
+
+def build_degree_roster() -> str | None:
+    """Complete department degree-program list from the graph (never truncated)."""
+    graph = _load_graph()
+    degs = list(graph["nodes"]["degree_programs"].values())
+    if not degs:
+        return None
+    groups = [
+        ("Undergraduate degrees", lambda d: d["level"] == "undergraduate" and d["type"] == "degree"),
+        ("Undergraduate minor", lambda d: d["type"] == "minor"),
+        ("Graduate degrees (on campus)", lambda d: d["level"] == "graduate" and d["type"] == "degree"),
+        ("Online graduate degrees", lambda d: d["type"] == "online"),
+        ("Graduate certificates", lambda d: d["type"] == "certificate"),
+    ]
+    lines = [
+        "--- Complete TAMU ECE Degree Programs (from knowledge graph) ---",
+        "",
+        f"This is the authoritative, COMPLETE list of all {len(degs)} degree "
+        "programs, certificates, and minors the department offers. Do NOT omit "
+        "any of them and do NOT add a disclaimer about the list being incomplete.",
+        "",
+        "HOW TO ANSWER: present these grouped under the headings below, including "
+        "EVERY program in each group. If the user asked only about a subset (e.g. "
+        "'MS and PhD programs'), lead with that subset, but still include the "
+        "Microelectronics MS, the certificates, and the minor where relevant — "
+        "never silently drop them.",
+    ]
+    for heading, pred in groups:
+        items = [d for d in degs if pred(d)]
+        if items:
+            lines.append("")
+            lines.append(f"{heading}:")
+            lines += [f"- {d['name']}" for d in items]
+    return "\n".join(lines)

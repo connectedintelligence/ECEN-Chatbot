@@ -82,6 +82,12 @@ GRAPH_OVERRIDES: dict[str, list[str]] = {
     # The website lists him under Computer Engineering and Systems / Info Science
     # but not under AI/ML.
     "P.R. Kumar": ["Artificial Intelligence and Machine Learning"],
+    # Krishna Narayanan: title is literally "Associate Head for AI"; works on
+    # coding/information theory and machine learning. The website files him under
+    # Communications and Networks / Computer Engineering and Systems / Information
+    # Science and Learning Systems, but not under the AI/ML page, so the graph
+    # missed him for AI/ML rosters.
+    "Krishna Narayanan": ["Artificial Intelligence and Machine Learning"],
 }
 
 # ── Known degree programs ─────────────────────────────────────────────────────
@@ -161,8 +167,19 @@ _TITLE_ONLY_WORDS = {
     "interim", "endowed", "head", "member", "emeritus", "lecturer", "senior",
 }
 
+def _clean_name(line: str) -> str:
+    """Strip quoted nicknames and collapse whitespace, e.g.
+    'Jeyavijayan "JV" Rajendran' → 'Jeyavijayan Rajendran'. Without this, a name
+    with a quoted nickname fails name detection, so the next person's title/email
+    lines get merged into the PREVIOUS faculty entry (this is what put
+    Rajendran's email on Narayanan's node)."""
+    line = re.sub(r'[\"“”\'‘’][^\"“”\'‘’]*[\"“”\'‘’]', "", line)  # drop "JV" nicknames
+    return re.sub(r"\s+", " ", line).strip()
+
+
 def _is_likely_faculty_name(line: str) -> bool:
     """Return True if line looks like a person's name, not a heading or nav item."""
+    line = _clean_name(line)
     # Must match capitalized word pattern
     if not re.match(r"^[A-Z][a-zA-Z\.\-]+([\s][A-Z][a-zA-Z\.\-]+){1,4}$", line):
         return False
@@ -238,7 +255,7 @@ def _parse_faculty_from_chunk(text: str, url: str) -> list[dict]:
             if current and current.get("name"):
                 faculty.append(current)
             current = {
-                "name": line,
+                "name": _clean_name(line),
                 "is_group_leader": is_group_leader_section,
                 "source_url": url,
                 "titles": [],

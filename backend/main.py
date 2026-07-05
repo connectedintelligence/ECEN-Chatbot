@@ -28,8 +28,9 @@ from slowapi.errors import RateLimitExceeded
 from generator import generate, generate_stream, route_question, generate as _generate_full
 from retriever import retrieve_async, _people_area_topic, _people_by_area, _get_embedder, _get_reranker
 from graph_retriever import (
-    graph_query, build_area_roster, is_full_faculty_query, build_full_faculty_roster,
-    faculty_roster_sources, research_area_names,
+    graph_query, build_area_roster, build_intersection_roster, is_full_faculty_query,
+    build_full_faculty_roster, faculty_roster_sources, research_area_names,
+    is_degree_list_query, build_degree_roster, find_faculty_mentions,
 )
 from scheduler import create_scheduler, run_reindex
 import scheduler as _scheduler
@@ -119,6 +120,12 @@ class ChatRequest(BaseModel):
         None, max_length=10,
         description="Recent conversation turns (oldest first) so follow-up questions can be understood.",
     )
+    include_context: Optional[bool] = Field(
+        False,
+        description="Eval-only: return the retrieval context chunks with the answer "
+                    "(honored only when the server runs with EVAL_MODE=1, so "
+                    "production never exposes raw context).",
+    )
 
 
 class Source(BaseModel):
@@ -130,6 +137,9 @@ class Source(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
+    # Populated only for eval runs (include_context=true + EVAL_MODE=1); lets
+    # faithfulness metrics ground the answer against what retrieval provided.
+    context: Optional[list[str]] = None
 
 
 class FeedbackRequest(BaseModel):
@@ -230,10 +240,10 @@ async def report_issue(request: Request, req: ReportRequest):
 
 # URLs of synthetic, code-generated context chunks — excluded from cited sources.
 _SYNTHETIC_URLS = {"knowledge-graph", "research-area-roster", "faculty-roster",
-                   "about:eira"}
+                   "degree-roster", "about:eira"}
 # Roster paths supply their own already-curated, relevant source list — keep all
 # of those; only the open-ended retrieval path needs trimming.
-_ROSTER_URLS = {"research-area-roster", "faculty-roster"}
+_ROSTER_URLS = {"research-area-roster", "faculty-roster", "degree-roster"}
 # Max sources to cite on the normal retrieval path (we feed more chunks to the
 # LLM for answer completeness, but only cite the few most relevant).
 MAX_SOURCES = 6
@@ -306,6 +316,10 @@ _CHITCHAT_RE = _re.compile(
     r"thanks?|thank\s*you|ty|cheers|"
     r"bye|goodbye|see\s*you|"
     r"what\s+can\s+you\s+do|what\s+are\s+you|who\s+are\s+you|"
+    # "are you a real person / human / a bot?" — identity questions must be
+    # answered from the persona, not retrieval (which has nothing and returned
+    # the no-info fallback — caught by eval case 1.2).
+    r"are\s+you\s+(a\s+|an\s+)?(real\s+)?(person|human|robot|bot|ai|chatbot)|"
     r"help(\s+me)?|can\s+you\s+help)\s*[!?.]*\s*$",
     _re.IGNORECASE,
 )
@@ -498,6 +512,14 @@ async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None,
 
     # "Whom should I reach out to about <topic>?" — any phrasing, via router.
     if intent == "people_by_area" and (route or {}).get("topic"):
+        # Two-area "works on BOTH X and Y" → intersect the two area rosters
+        # instead of collapsing to a single area and dropping the 2nd constraint.
+        inter = build_intersection_roster(req.question)
+        if inter:
+            log.info("Routed area INTERSECTION for %r", req.question)
+            return [{"url": "research-area-roster",
+                     "title": "Faculty across two research areas",
+                     "section": "graph", "text": inter, "rerank_score": 10.0}]
         topic = [w for w in (route["topic"] or "").split() if w]
         precise = _people_by_area(topic)
         roster = build_area_roster(topic, precise)
@@ -542,6 +564,12 @@ async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None,
     # phrasing matches the classic enumeration pattern).
     topic = _people_area_topic(req.question)
     if topic:
+        inter = build_intersection_roster(req.question)
+        if inter:
+            log.info("Legacy area INTERSECTION for %r", req.question)
+            return [{"url": "research-area-roster",
+                     "title": "Faculty across two research areas",
+                     "section": "graph", "text": inter, "rerank_score": 10.0}]
         precise = _people_by_area(topic)
         roster = build_area_roster(topic, precise)
         if roster:
@@ -559,6 +587,21 @@ async def _prepare_chunks(req: "ChatRequest", route: Optional[dict] = None,
                        if c["url"] not in seen and not seen.add(c["url"])]
             return [roster_chunk] + deduped
 
+    # Authoritative complete degree-program list from the graph, so the answer
+    # never drops newer programs (Microelectronics MS, certificates, minor) that
+    # a stale crawled degrees page omits.
+    if is_degree_list_query(req.question):
+        roster = build_degree_roster()
+        if roster:
+            log.info("Degree roster injected for %r", req.question)
+            return [
+                {"url": "degree-roster", "title": "TAMU ECE Degree Programs",
+                 "section": "graph", "text": roster, "rerank_score": 10.0},
+                {"url": "https://engineering.tamu.edu/electrical/academics/degrees/index.html",
+                 "title": "Degree Programs | Texas A&M University Engineering",
+                 "section": "academics", "text": "", "rerank_score": 0.0},
+            ]
+
     chunks = (prefetched if prefetched is not None
               else await retrieve_async(req.question, section_filter=req.section_filter))
     if not chunks:
@@ -575,6 +618,45 @@ def _history_dicts(req: "ChatRequest") -> list[dict]:
     return [{"role": t.role, "content": t.content} for t in (req.history or [])]
 
 
+# ── Follow-up (anaphora) resolution for retrieval ────────────────────────────
+# _fast_route deliberately skips LLM query rewriting for latency, so a follow-up
+# like "did HE have any collaborators on THIS paper?" reaches retrieval with no
+# entity in it — dense/BM25 then latch onto whichever faculty page shares
+# surface vocabulary (issue #18: an award question surfaced Dr. Balog with no
+# motivation from the conversation). Deterministic, zero-latency repair: if the
+# question is anaphoric and doesn't name anyone itself, anchor the retrieval
+# query to the faculty member most recently mentioned in the conversation.
+_ANAPHORA_RE = _re.compile(
+    r"\b(he|she|him|her|his|hers|they|them|their|theirs)\b"
+    r"|\b(this|that|these|those|the\s+same)\s+"
+    r"(paper|papers|award|awards|research|work|lab|group|project|projects|"
+    r"person|professor|faculty|course|courses|area|topic|publication|publications)\b"
+    r"|^\s*(what|how)\s+about\b",
+    _re.IGNORECASE,
+)
+
+
+def _resolve_followup_question(question: str, history: list[dict]) -> str:
+    """Return `question` anchored to the person it refers to, when that can be
+    resolved deterministically from recent history; otherwise unchanged.
+
+    Only rewrites when (a) there IS history, (b) the question is anaphoric,
+    and (c) the question itself names no faculty member — so fresh, fully
+    specified questions are never touched.
+    """
+    if not history or not _ANAPHORA_RE.search(question):
+        return question
+    if find_faculty_mentions(question):
+        return question
+    for turn in reversed(history):
+        names = find_faculty_mentions(turn.get("content", ""))
+        if names:
+            resolved = f"{question} (referring to {names[-1]})"
+            log.info("Follow-up resolved to %r", names[-1])
+            return resolved
+    return question
+
+
 async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict], Optional[list]]:
     """Classify intent with zero-latency heuristics and prefetch retrieval.
 
@@ -589,8 +671,16 @@ async def _route(req: "ChatRequest") -> tuple["ChatRequest", Optional[dict], Opt
     if route["intent"] in ("chitchat", "creator"):
         return req, route, None
 
-    prefetched = await retrieve_async(req.question, req.section_filter)
-    return req, route, prefetched
+    # Anchor anaphoric follow-ups ("did he…", "this paper…") to the person the
+    # conversation is actually about before retrieval, so dense/BM25 search has
+    # an entity to match instead of latching onto an arbitrary faculty page.
+    resolved = _resolve_followup_question(req.question, _history_dicts(req))
+    search_req = req if resolved == req.question else req.model_copy(
+        update={"question": resolved})
+    route["standalone_question"] = resolved
+
+    prefetched = await retrieve_async(search_req.question, req.section_filter)
+    return search_req, route, prefetched
 
 
 @app.post("/chat", summary="Streaming chat (Server-Sent Events)")
@@ -603,8 +693,12 @@ async def chat_stream(request: Request, req: ChatRequest):
                flagged="injection_regex")
         return _canned_stream(_REFUSAL_TEXT)
 
+    import time as _t
+    _t_req = _t.perf_counter()
     history = _history_dicts(req)
     search_req, route, prefetched = await _route(req)
+    log.info("TIMING route+retrieval: %.2fs (intent=%s) for %r",
+             _t.perf_counter() - _t_req, (route or {}).get("intent"), req.question)
 
     # LLM-detected injection / jailbreak / exfiltration attempt.
     if route and route.get("suspicious"):
@@ -624,6 +718,8 @@ async def chat_stream(request: Request, req: ChatRequest):
             return _canned_stream(answer, cached_sources)
 
     chunks = _gate_context(await _prepare_chunks(search_req, route, prefetched=prefetched))
+    log.info("TIMING through prepare_chunks: %.2fs (%d chunks)",
+             _t.perf_counter() - _t_req, len(chunks))
     if not chunks:
         _audit(request, req.question, search_req.question, route, [],
                _NO_INFO_TEXT, flagged="no_reliable_context")
@@ -658,10 +754,17 @@ async def chat_stream(request: Request, req: ChatRequest):
         def _sse(text: str) -> str:
             return f"data: {text.replace(chr(10), chr(92) + 'n')}\n\n"
 
+        _llm_t0 = _t.perf_counter()
+        _ttft_logged = False
         try:
             async for delta in generate_stream(gen_question, chunks, history=history):
                 if not delta:
                     continue
+                if not _ttft_logged:
+                    log.info("TIMING LLM first token: %.2fs after retrieval done "
+                             "(%.2fs total since request)",
+                             _t.perf_counter() - _llm_t0, _t.perf_counter() - _t_req)
+                    _ttft_logged = True
                 pending += delta
                 if len(pending) > 2 * _HOLDBACK:
                     release, pending = pending[:-_HOLDBACK], pending[-_HOLDBACK:]
@@ -693,6 +796,8 @@ async def chat_stream(request: Request, req: ChatRequest):
             yield f"data: {answer.replace(chr(10), chr(92) + 'n')}\n\n"
 
         yield "data: [DONE]\n\n"
+        log.info("TIMING LLM generation: %.2fs | total request: %.2fs (%d chars)",
+                 _t.perf_counter() - _llm_t0, _t.perf_counter() - _t_req, len(answer_acc))
         if ckey and emitted > 0 and answer_acc:
             _cache_put(ckey, answer_acc, sources)
         _audit(request, req.question, search_req.question, route, sources, answer_acc)
@@ -730,13 +835,22 @@ async def chat_sync(request: Request, req: ChatRequest):
                for c in _select_sources(chunks)]
     _audit(request, req.question, search_req.question, route,
            [s.model_dump() for s in sources], answer)
-    return ChatResponse(answer=answer, sources=sources)
+    ctx = None
+    if req.include_context and os.getenv("EVAL_MODE"):
+        ctx = [c["text"] for c in chunks if c.get("text")]
+    return ChatResponse(answer=answer, sources=sources, context=ctx)
 
 
 @app.get("/admin/test-llm", summary="Test LLM with a minimal prompt")
 async def test_llm():
-    """Sends 'Say hello.' to the LLM and returns the raw response."""
-    import httpx, json as _json
+    """Sends a trivial prompt to the LLM and returns the answer plus timings.
+
+    This isolates the model: no retrieval, no reranking, a one-line prompt. If
+    `seconds_total` here is already large, the latency is the model/endpoint
+    itself (e.g. a reasoning model, a cold serverless backend, or network), and
+    no amount of retrieval tuning will help — the fix is the model choice.
+    """
+    import time, httpx, json as _json
     from generator import TAMU_API_URL, TAMU_API_KEY, TAMU_MODEL
     payload = {
         "model": TAMU_MODEL,
@@ -745,7 +859,9 @@ async def test_llm():
     }
     parts = []
     raw_lines = []
-    async with httpx.AsyncClient(timeout=30) as client:
+    t0 = time.perf_counter()
+    ttft = None  # time to first content token
+    async with httpx.AsyncClient(timeout=60) as client:
         async with client.stream("POST", f"{TAMU_API_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {TAMU_API_KEY}", "Content-Type": "application/json"},
                 json=payload) as resp:
@@ -758,10 +874,18 @@ async def test_llm():
                             obj = _json.loads(data)
                             text = obj["choices"][0]["delta"].get("content", "")
                             if text:
+                                if ttft is None:
+                                    ttft = round(time.perf_counter() - t0, 2)
                                 parts.append(text)
                         except Exception:
                             pass
-    return {"answer": "".join(parts), "raw_lines": raw_lines[:20]}
+    return {
+        "answer": "".join(parts),
+        "model": TAMU_MODEL,
+        "seconds_to_first_token": ttft,
+        "seconds_total": round(time.perf_counter() - t0, 2),
+        "raw_lines": raw_lines[:20],
+    }
 
 
 @app.post("/admin/reindex", summary="Manually trigger a site re-index")

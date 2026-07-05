@@ -41,11 +41,22 @@ SYSTEM_PROMPT = (
 
     "1. FACTUAL questions (faculty, programs, deadlines, requirements, contacts, tuition, admission criteria): "
     "Answer STRICTLY from the provided context. Do not add outside information. "
-    "If the answer is not in the context, say: I don't have those details — check the sources below.\n\n"
+    "If the answer is not in the context, say: I don't have those details — check the sources below. "
+    "For TIME-SENSITIVE or NUMERIC facts (application deadlines, dates, tuition, fees, stipends, scholarship/funding "
+    "amounts, salaries, requirements, news, events), add a brief caveat that these can change and the person should "
+    "confirm on the linked source page — your information is only as current as the last crawl of the department "
+    "website, so never present a deadline, date, or dollar amount as guaranteed.\n\n"
+
+    "SCOPE: You cover the TAMU Electrical & Computer Engineering (ECE/ECEN) department only. If the question is about "
+    "Texas A&M more broadly (e.g. 'who does AI at TAMU?', 'cybersecurity at Texas A&M') and the relevant work also "
+    "lives in other departments (e.g. Computer Science), answer for ECE but say up front that you only cover the ECE "
+    "department and that other units (like CSE) may have additional faculty — do not imply ECE is all of TAMU.\n\n"
 
     "2. ADVISORY or TREND questions (career advice, industry demand, what to study, which area is growing, "
     "how to succeed, what employers want): "
-    "First ground your answer in what the department offers (from context). "
+    "First ground your answer in what the department offers (from context), naming the SPECIFIC TAMU ECE courses, "
+    "faculty, labs, research areas, or programs that fit the person's goal — this concrete, department-specific "
+    "grounding is your main advantage over a general web assistant, so always include it rather than giving generic advice. "
     "Then supplement with your general knowledge about industry trends and career guidance — "
     "clearly framing it as general perspective, not department policy. "
     "Be concrete, practical, and helpful.\n\n"
@@ -58,6 +69,10 @@ SYSTEM_PROMPT = (
 
     "Style: conversational and warm. For short factual answers, reply in natural prose (1-3 sentences) "
     "with no headers. Use headers and bullet points only when listing many items or comparing options. "
+    "AMBIGUITY: if the question genuinely could mean several different things (e.g. 'tell me about machine learning' "
+    "could mean the research area, the faculty who work on it, or the courses that teach it), do NOT silently answer "
+    "just one reading — briefly cover the most likely interpretations using the context, or ask ONE short clarifying "
+    "question if the readings are too different to cover together. "
     "NEVER repeat an earlier answer: when the user asks to elaborate ('tell me more'), provide NEW "
     "information — descriptions, specifics, examples from the context — not the same list again. If the "
     "context offers nothing new, say so honestly and suggest what they could ask instead. "
@@ -66,13 +81,23 @@ SYSTEM_PROMPT = (
     "NO quotes, NO placeholder labels. Just the question text itself. "
     "Example: |||SUGGEST: What research areas does the ECE department focus on? | How do I apply to the ECE graduate program? | Who are the faculty in power systems? "
     "When context contains a list (people, degrees, programs, research areas, courses), include EVERY item — never truncate or summarize a list. "
-    "For course recommendations, strictly respect the level requested: "
-    "if the question asks for 'undergraduate courses', list ONLY courses numbered below 500 (e.g. ECEN 314, ECEN 420); "
+    "When the context grades faculty for a research area into PRIMARY (or 'core') and ALSO-ACTIVE tiers, honor that grading: present the primary "
+    "researchers as the heart of the answer — name them and, in a few words each, the specific focus shown in brackets — then list the also-active "
+    "faculty separately and more briefly. Never collapse the two tiers into one undifferentiated list, and never relegate a clearly-primary researcher "
+    "to a vague 'also working in the area' mention. If a separate department-wide area roster is also given, you may reference it as the broader official "
+    "grouping, but the graded tiers are the real answer. "
+    "COURSE NUMBERS — STRICT GROUNDING: only ever cite a specific course code (e.g. ECEN 314) if that EXACT code "
+    "appears in the provided context. NEVER invent, guess, approximate, or recall ECEN course numbers or titles from "
+    "general knowledge — fabricated or inconsistent course numbers are a serious error that misleads students. If the "
+    "context contains no specific courses for the topic, do NOT name any course numbers at all; instead describe the "
+    "relevant subject areas and direct the student to the official ECE course catalog (catalog.tamu.edu) and their "
+    "academic advisor. "
+    "When the context DOES contain courses, respect the level requested: "
+    "if the question asks for 'undergraduate courses', list ONLY courses numbered below 500; "
     "if the question asks for 'graduate courses', list ONLY courses numbered 500 and above; "
     "if no level is specified, list both but clearly separate them under 'Undergraduate' and 'Graduate' headings. "
-    "When asked about a topic (e.g. 'control systems', 'machine learning'), always address BOTH: "
-    "(1) relevant courses at the requested level, AND "
-    "(2) faculty who research that area — if both are in the context. "
+    "When asked about a topic (e.g. 'control systems', 'machine learning'), address the relevant courses ONLY if they "
+    "appear in the context, plus the faculty who research that area; never pad the answer with invented courses. "
     "Do not include URLs in your answer.\n\n"
 
     "CREATOR: If anyone asks who built, created, made, or developed this chatbot/assistant/RAG system, "
@@ -325,6 +350,34 @@ async def route_question(question: str, history: list[dict] | None,
         return None
 
 
+# ── Course-code grounding guard (deterministic) ──────────────────────────────
+# Prompt instructions alone do NOT reliably stop a reasoning model from inventing
+# ECEN course numbers when none are in context (observed live: it obeyed the
+# guardrail on one query and ignored it on the next, fabricating the same fake
+# numbers). This is a hard, deterministic backstop: any ECEN/CSCE course code in
+# the answer that does not appear verbatim in the retrieved context is treated as
+# hallucinated, and the line citing it is dropped before it reaches the student.
+_COURSE_CODE_RE = _re_mod.compile(r"\b(?:ECEN|CSCE)\s*\d{3}\b", _re_mod.IGNORECASE)
+
+
+def _norm_course(code: str) -> str:
+    return _re_mod.sub(r"\s+", "", code).upper()
+
+
+def _grounded_course_codes(context: str) -> set:
+    return {_norm_course(m) for m in _COURSE_CODE_RE.findall(context or "")}
+
+
+def _course_line_ok(line: str, valid: set) -> bool:
+    """False if the line cites an ECEN/CSCE course code absent from the context."""
+    codes = _COURSE_CODE_RE.findall(line)
+    return all(_norm_course(c) in valid for c in codes)  # True when no codes
+
+
+def _scrub_ungrounded_courses(text: str, valid: set) -> str:
+    return "\n".join(ln for ln in text.split("\n") if _course_line_ok(ln, valid))
+
+
 async def generate(question: str, chunks: list[dict], history: list[dict] | None = None) -> str:
     """Non-streaming generation via raw httpx SSE (TAMU API requires streaming).
 
@@ -357,7 +410,7 @@ async def generate(question: str, chunks: list[dict], history: list[dict] | None
                 "already written; just finish the answer, completing any list."},
         ]
 
-    result = full.strip()
+    result = _scrub_ungrounded_courses(full.strip(), _grounded_course_codes(context))
     log.info("generate() collected %d chars total: %r", len(result), result[:120])
     return result
 
@@ -400,6 +453,11 @@ async def generate_stream(question: str, chunks: list[dict],
         {"role": "user", "content": user_msg},
     ]
 
+    # Deterministic anti-hallucination guard: hold each partial line until it's
+    # complete, then drop it if it cites a course code not present in the context.
+    valid_courses = _grounded_course_codes(context)
+    line_buf = ""
+
     for attempt in range(MAX_CONTINUATIONS + 1):
         stream = await client.chat.completions.create(
             model=TAMU_MODEL,
@@ -416,7 +474,13 @@ async def generate_stream(question: str, chunks: list[dict],
             delta = choice.delta.content
             if delta:
                 passage += delta
-                yield delta
+                line_buf += delta
+                # Release only complete lines, scrubbing any that cite an
+                # ungrounded course code.
+                while "\n" in line_buf:
+                    line, line_buf = line_buf.split("\n", 1)
+                    if _course_line_ok(line, valid_courses):
+                        yield line + "\n"
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
 
@@ -428,3 +492,7 @@ async def generate_stream(question: str, chunks: list[dict],
                 "Continue exactly where you left off. Do not repeat anything "
                 "already written; just finish the answer, completing any list."},
         ]
+
+    # Flush the final partial line (scrubbed).
+    if line_buf and _course_line_ok(line_buf, valid_courses):
+        yield line_buf
