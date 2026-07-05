@@ -490,7 +490,9 @@ def run(priority_filter: Optional[str] = None, tag_filter: Optional[str] = None,
             "id": cid, "priority": case["priority"],
             "tags": case.get("tags", []), "question": q, "passed": ok,
             "deterministic_failures": det_failures, "metrics": metric_results,
-            "answer_preview": (answer or "")[:400],
+            # Full-ish answer so faithfulness flags can be adjudicated from
+            # the report without re-running the case.
+            "answer_preview": (answer or "")[:2000],
         })
 
     meta = {"when": time.strftime("%Y-%m-%d %H:%M:%S"), "base_url": BASE_URL,
