@@ -6,9 +6,6 @@ Electrical & Computer Engineering. This document covers the architecture,
 every file in the repository, how to clone/run/test/deploy the system, and the
 operational gotchas learned in production.
 
-Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
-**Prof. Krishna Narayanan**.
-
 - **Live app:** https://ecen-chatbot-199137295144.us-central1.run.app
 - **Repo:** https://github.com/Aa-Rho-Hi/ECEN-Chatbot
 - Companion docs: [README.md](README.md) (overview), [SETUP.md](SETUP.md)

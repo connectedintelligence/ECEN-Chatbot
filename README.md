@@ -7,9 +7,6 @@ grounded in the department's official website.
 
 **Live:** https://ecen-chatbot-199137295144.us-central1.run.app
 
-Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
-**Prof. Krishna Narayanan**.
-
 > **Full operational/developer reference:** [RUNBOOK.md](RUNBOOK.md) — clone &
 > run steps, architecture deep-dive, file-by-file documentation, testing &
 > deployment procedures, and production troubleshooting.
