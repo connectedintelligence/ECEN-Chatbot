@@ -109,6 +109,21 @@ def main():
     for want in ("ecen_docs_url_idx", "ecen_docs_section_idx"):
         line(OK if want in idx else WARN, f"index {want}: {'present' if want in idx else 'missing'}")
 
+    # Full-text + trigram indexes back the keyword and fuzzy retrieval arms.
+    # Without them those arms recompute to_tsvector / word_similarity over the
+    # whole corpus on every query (seq scan) -> seconds of added latency.
+    defs = " ".join(idx.values()).lower()
+    if "ecen_docs_fts_idx" in idx or "to_tsvector" in defs:
+        line(OK, "full-text GIN index present (keyword arm)")
+    else:
+        line(WARN, "no full-text GIN index -> keyword search seq-scans every query "
+                   "(run scripts/migrations/2026-06-22_add_fts_trgm_indexes.sql)")
+    if "ecen_docs_text_trgm_idx" in idx or "gin_trgm_ops" in defs:
+        line(OK, "trigram GIN index present (fuzzy arm)")
+    else:
+        line(WARN, "no trigram GIN index -> fuzzy search seq-scans every query "
+                   "(run scripts/migrations/2026-06-22_add_fts_trgm_indexes.sql)")
+
     # freshness
     cur.execute("SELECT max(last_indexed) FROM ecen_docs;")
     last = cur.fetchone()[0]

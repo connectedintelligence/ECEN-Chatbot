@@ -119,6 +119,20 @@ def ensure_table(conn) -> None:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS ecen_docs_url_idx ON ecen_docs (url);")
         cur.execute("CREATE INDEX IF NOT EXISTS ecen_docs_section_idx ON ecen_docs (section);")
+        # Full-text keyword arm: a functional GIN index over the english
+        # tsvector. Without it, `to_tsvector('english', text) @@ to_tsquery(...)`
+        # recomputes the tsvector for EVERY row on EVERY query (sequential scan).
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS ecen_docs_fts_idx
+            ON ecen_docs USING gin (to_tsvector('english', text));
+        """)
+        # Fuzzy/typo arm: trigram GIN index so the `<%` word-similarity operator
+        # is index-accelerated instead of scanning the whole corpus per query.
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS ecen_docs_text_trgm_idx
+            ON ecen_docs USING gin (text gin_trgm_ops);
+        """)
     conn.commit()
     log.info("Table and indexes ready.")
 

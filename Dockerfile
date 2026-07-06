@@ -37,6 +37,13 @@ from sentence_transformers import SentenceTransformer, CrossEncoder; \
 SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2'); \
 CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
+# Models are baked into the image cache above. Force offline mode at RUNTIME so
+# startup uses the local cache instead of HEAD-checking HuggingFace for updates.
+# Those checks were returning HTTP 429 (rate-limited) and adding ~2.5 minutes to
+# every cold start. Set AFTER the bake step so the download above still works.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 # Backend source + crawler (used by the ecen-reindex Cloud Run Job)
 COPY backend/ ./backend/
 COPY crawler/ ./crawler/

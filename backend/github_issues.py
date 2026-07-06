@@ -46,7 +46,7 @@ def create_issue(title: str, body: str, labels: list[str] | None = None) -> dict
             "X-GitHub-Api-Version": "2022-11-28",
         },
         json={"title": title, "body": body, "labels": labels or []},
-        timeout=15.0,
+        timeout=10.0,
     )
     if resp.status_code >= 300:
         log.error("GitHub issue creation failed: %s %s", resp.status_code, resp.text[:300])

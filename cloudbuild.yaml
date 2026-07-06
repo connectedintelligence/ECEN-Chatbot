@@ -28,6 +28,17 @@ steps:
       - '--image=${_AR_HOSTNAME}/${_AR_PROJECT_ID}/${_AR_REPOSITORY}/${_SERVICE_NAME}:${COMMIT_SHA}'
       - '--labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=${COMMIT_SHA},gcb-build-id=${BUILD_ID},gcb-trigger-id=${_TRIGGER_ID}'
       - '--region=${_DEPLOY_REGION}'
+      # Resource + scaling flags pinned here so CI deploys are deterministic and
+      # don't drift from the manual deploy_gcp.sh. min-instances=1 keeps one
+      # backend warm (models stay resident in RAM) so requests don't pay the
+      # 5-10s model-reload cold start. Flip _MIN_INSTANCES to 0 to scale to zero
+      # and save the ~$40/mo idle cost (at the cost of cold starts).
+      - '--min-instances=${_MIN_INSTANCES}'
+      - '--max-instances=4'
+      - '--memory=4Gi'
+      - '--cpu=2'
+      - '--cpu-boost'
+      - '--timeout=600'
       - '--quiet'
 
   # Keep the nightly re-index job on the same image. `jobs deploy` creates the
@@ -68,3 +79,8 @@ substitutions:
   _DEPLOY_REGION: us-central1
   _PLATFORM: managed
   _TRIGGER_ID: manual
+  # Warm instances kept alive 24/7. 1 = no cold starts (~$38-40/mo idle cost for
+  # 2 vCPU / 4Gi); 0 = scale to zero (free when idle, but cold starts return).
+  # Set to 0: scale to zero, no idle charge. Flip to 1 if cold starts become a
+  # problem and you'd rather pay to keep one instance warm.
+  _MIN_INSTANCES: '0'
