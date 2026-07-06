@@ -145,6 +145,108 @@ MULTI_TURN_CASES: list[dict[str, Any]] = [
 
 
 # ---------------------------------------------------------------------------
+# Extended probes (tag "extended") — deeper checks beyond the core suite:
+# longer conversation chains, hallucination bait, cross-area rosters, and
+# specific facts verified against the official site on 2026-07-05.
+# ---------------------------------------------------------------------------
+EXTENDED_CASES: list[dict[str, Any]] = [
+    {
+        # Three-turn chain: the referent must survive MULTIPLE follow-ups.
+        "id": "E.1",
+        "history": [
+            {"role": "user", "content": "What does Dileep Kalathil research?"},
+            {"role": "assistant",
+             "content": "Dileep Kalathil works on reinforcement learning and "
+                        "stochastic control with applications to energy systems."},
+            {"role": "user", "content": "Does he teach any courses?"},
+            {"role": "assistant",
+             "content": "Yes, Dileep Kalathil teaches courses related to "
+                        "machine learning and control."},
+        ],
+        "question": "And what's his email address?",
+        "forbidden": ["balog", "overbye", "righetti"],
+        "priority": "P0",
+        "tags": ["multiturn", "extended"],
+    },
+    {
+        # Cross-area intersection: must answer the BOTH constraint, not dump
+        # one area's roster.
+        "id": "E.2",
+        "question": "Which faculty work on both machine learning and power systems?",
+        "forbidden": ["don't have those details"],
+        "priority": "P1",
+        "tags": ["roster", "extended"],
+    },
+    {
+        # Hallucination bait: nonexistent course number.
+        "id": "E.3",
+        "question": "Tell me about ECEN 999 Advanced Quantum Basket Weaving.",
+        "require_any": [["don't have", "couldn't find", "no information",
+                         "not offered", "doesn't exist", "does not exist",
+                         "not aware", "isn't", "no course", "not familiar",
+                         "cannot find", "check"]],
+        "priority": "P0",
+        "tags": ["edge", "hallucination", "extended"],
+    },
+    {
+        # Hallucination bait: nonexistent degree program.
+        "id": "E.4",
+        "question": "Tell me about the Bachelor of Arts in Electrical Engineering at TAMU.",
+        "forbidden": ["the bachelor of arts in electrical engineering is"],
+        "require_any": [["bachelor of science", "don't have", "not offer",
+                         "doesn't offer", "does not offer", "no information",
+                         "isn't", "couldn't find"]],
+        "priority": "P0",
+        "tags": ["edge", "hallucination", "extended"],
+    },
+    {
+        # Specific fact verified on the official admissions page 2026-07-05:
+        # Fall international deadline is February 1.
+        "id": "E.5",
+        "question": "What is the application deadline for international students applying for Fall?",
+        "required": ["february 1"],
+        "priority": "P0",
+        "tags": ["admissions", "factual", "extended"],
+    },
+    {
+        # Known data landmine: the graph node's email for Narayanan was
+        # polluted by a crawl merge (mixed with Rajendran's). The roster
+        # contact path pins the correct krn@tamu.edu, but a DIRECT email
+        # lookup may hit the polluted node. If this fails, it's a real bug.
+        "id": "E.6",
+        "question": "What is Krishna Narayanan's email address?",
+        "require_any": [["krn@tamu.edu", "don't have", "couldn't find", "directory"]],
+        "priority": "P1",
+        "tags": ["faculty", "factual", "extended"],
+    },
+    {
+        # Topic switch after person-talk: must NOT stay anchored to the
+        # previous person when the user changes subject.
+        "id": "E.7",
+        "history": [
+            {"role": "user", "content": "Tell me about Raffaella Righetti."},
+            {"role": "assistant",
+             "content": "Raffaella Righetti works on biomedical imaging and "
+                        "ultrasound elastography."},
+        ],
+        "question": "Now tell me about the department's power systems research.",
+        "required": ["power"],
+        "priority": "P0",
+        "tags": ["multiturn", "control", "extended"],
+    },
+    {
+        # Verified on the distance-learning page 2026-07-05: online programs
+        # mirror on-campus rigor (same assignments/exams).
+        "id": "E.8",
+        "question": "Are the online graduate programs as rigorous as the on-campus ones?",
+        "require_any": [["same", "rigorous", "equal", "identical"]],
+        "priority": "P2",
+        "tags": ["academics", "extended"],
+    },
+]
+
+
+# ---------------------------------------------------------------------------
 # Chat client (extends eval.py's ask with history + retrieval context)
 # ---------------------------------------------------------------------------
 def ask(question: str, history: Optional[list[dict]] = None,
@@ -445,7 +547,7 @@ def run(priority_filter: Optional[str] = None, tag_filter: Optional[str] = None,
               "deterministic-only checks.", file=sys.stderr)
         return 2
 
-    cases = list(CASES) + MULTI_TURN_CASES
+    cases = list(CASES) + MULTI_TURN_CASES + EXTENDED_CASES
     if priority_filter:
         cases = [c for c in cases if c["priority"] == priority_filter]
     if tag_filter:
