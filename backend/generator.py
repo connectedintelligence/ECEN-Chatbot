@@ -378,6 +378,19 @@ def _scrub_ungrounded_courses(text: str, valid: set) -> str:
     return "\n".join(ln for ln in text.split("\n") if _course_line_ok(ln, valid))
 
 
+# When the anti-hallucination scrubber deletes EVERYTHING the model wrote
+# (every line cited an ungrounded course, e.g. the user asked about a course
+# that doesn't exist), never return a blank answer — say so honestly instead.
+# Found by eval case E.3: "Tell me about ECEN 999 ..." returned an empty body
+# with only the |||SUGGEST trailer.
+_SCRUBBED_EMPTY_TEXT = (
+    "I couldn't find that course in the department's official course "
+    "listings, so I can't provide details about it — it may not exist or may "
+    "no longer be offered. Please check the official TAMU course catalog, or "
+    "ask me about courses in a specific research area."
+)
+
+
 async def generate(question: str, chunks: list[dict], history: list[dict] | None = None) -> str:
     """Non-streaming generation via raw httpx SSE (TAMU API requires streaming).
 
@@ -411,6 +424,12 @@ async def generate(question: str, chunks: list[dict], history: list[dict] | None
         ]
 
     result = _scrub_ungrounded_courses(full.strip(), _grounded_course_codes(context))
+    # Scrubber removed everything the model wrote → honest fallback, keeping
+    # the |||SUGGEST trailer (if any) so the UI still shows follow-ups.
+    body, sep, tail = result.partition("|||SUGGEST")
+    if full.strip() and not body.strip():
+        result = _SCRUBBED_EMPTY_TEXT + (("\n\n" + sep + tail) if sep else "")
+        log.info("generate(): scrubber emptied the answer; using fallback text")
     log.info("generate() collected %d chars total: %r", len(result), result[:120])
     return result
 
@@ -457,6 +476,9 @@ async def generate_stream(question: str, chunks: list[dict],
     # complete, then drop it if it cites a course code not present in the context.
     valid_courses = _grounded_course_codes(context)
     line_buf = ""
+    total_wrote = 0    # chars the model produced (pre-scrub)
+    body_yielded = 0   # substantive chars that survived the scrub
+    trailer = ""       # held-back |||SUGGEST line, re-attached at the end
 
     for attempt in range(MAX_CONTINUATIONS + 1):
         stream = await client.chat.completions.create(
@@ -475,11 +497,25 @@ async def generate_stream(question: str, chunks: list[dict],
             if delta:
                 passage += delta
                 line_buf += delta
+                total_wrote += len(delta)
                 # Release only complete lines, scrubbing any that cite an
-                # ungrounded course code.
+                # ungrounded course code. The |||SUGGEST trailer is held back
+                # so an honest fallback can precede it if the scrubber ends up
+                # deleting the entire body (eval case E.3).
                 while "\n" in line_buf:
                     line, line_buf = line_buf.split("\n", 1)
-                    if _course_line_ok(line, valid_courses):
+                    if not _course_line_ok(line, valid_courses):
+                        continue
+                    pre, sep, post = line.partition("|||SUGGEST")
+                    if sep:
+                        if pre.strip():
+                            body_yielded += len(pre.strip())
+                            yield pre
+                        trailer = sep + post
+                    elif trailer:
+                        trailer += "\n" + line
+                    else:
+                        body_yielded += len(line.strip())
                         yield line + "\n"
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
@@ -493,6 +529,24 @@ async def generate_stream(question: str, chunks: list[dict],
                 "already written; just finish the answer, completing any list."},
         ]
 
-    # Flush the final partial line (scrubbed).
+    # Flush the final partial line (scrubbed), holding back any trailer.
     if line_buf and _course_line_ok(line_buf, valid_courses):
-        yield line_buf
+        pre, sep, post = line_buf.partition("|||SUGGEST")
+        if sep:
+            if pre.strip():
+                body_yielded += len(pre.strip())
+                yield pre
+            trailer = (trailer + "\n" if trailer else "") + sep + post
+        elif trailer:
+            trailer += "\n" + line_buf
+        else:
+            body_yielded += len(line_buf.strip())
+            yield line_buf
+
+    # Scrubber deleted everything the model wrote → honest fallback instead
+    # of a blank answer (found by eval case E.3).
+    if total_wrote and not body_yielded:
+        log.info("generate_stream(): scrubber emptied the answer; yielding fallback")
+        yield _SCRUBBED_EMPTY_TEXT
+    if trailer:
+        yield "\n\n" + trailer

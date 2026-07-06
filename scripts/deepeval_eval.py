@@ -368,6 +368,12 @@ def _build_metrics(case: dict, has_context: bool) -> list:
                 "response — score that HIGH. Score very LOW only if the "
                 "response invents or picks a specific named person without "
                 "basis.",
+                "Users changing topic is normal: if the current question "
+                "introduces its own explicit subject (e.g. 'Now tell me about "
+                "power systems research'), the correct response follows the "
+                "NEW subject. Score that HIGH — never penalize a response for "
+                "not connecting back to a previously discussed person once "
+                "the user has moved on.",
                 "This metric measures ONLY whether the response is anchored "
                 "to the correct referent. Do NOT penalize incompleteness, "
                 "level of detail, conciseness, formatting, or overall answer "
