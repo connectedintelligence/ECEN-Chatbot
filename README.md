@@ -10,6 +10,10 @@ grounded in the department's official website.
 Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
 **Prof. Krishna Narayanan**.
 
+> **Full operational/developer reference:** [RUNBOOK.md](RUNBOOK.md) — clone &
+> run steps, architecture deep-dive, file-by-file documentation, testing &
+> deployment procedures, and production troubleshooting.
+
 ---
 
 ## Architecture
@@ -23,8 +27,9 @@ Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
                                                     │
                  ┌──────────────┬───────────────────┼───────────────────┐
                  ▼              ▼                   ▼                   ▼
-           LLM router     hybrid retrieval    knowledge graph     OpenAI LLM
-        (intent+rewrite)  pgvector + BM25     (faculty rosters)  (gpt-4o-mini)
+          fast router     hybrid retrieval    knowledge graph     OpenAI LLM
+       (intent + follow-  pgvector + FTS +    (faculty rosters)  (gpt-4o-mini)
+        up resolution)    fuzzy + BM25/RRF
                           + cross-encoder
                                 │
                                 ▼
@@ -38,11 +43,11 @@ Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
 ### Question pipeline
 
 1. **Security screen** — per-IP rate limit, injection-phrase regex.
-2. **LLM router** (one gpt-4o-mini call) — rewrites follow-ups into standalone
-   questions using conversation history, classifies intent
-   (`chitchat / creator / list_all_faculty / people_by_area / general`),
-   normalizes topics to canonical research areas, flags suspicious prompts.
-   Legacy keyword heuristics remain as a no-router fallback.
+2. **Fast router** (zero-latency, no LLM call) — classifies intent
+   (`chitchat / creator / list_all_faculty / people_by_area / general`) with
+   deterministic heuristics, and **resolves anaphoric follow-ups**: "did *he*
+   have collaborators on *this paper*?" is anchored to the faculty member the
+   conversation is actually about before retrieval runs (fix for issue #18).
 3. **Intent dispatch** — deterministic executors:
    - rosters served complete from the knowledge graph (never truncated by top-k),
    - chitchat/creator answered without retrieval (no junk citations),
@@ -53,7 +58,9 @@ Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
    hallucination.
 5. **Generation** — streaming SSE with persona (EIRA), conversation history,
    personalization to user-stated interests, auto-continuation on token-cap
-   truncation, and suggested follow-up questions.
+   truncation, suggested follow-up questions, and a deterministic course
+   scrubber (ungrounded course numbers dropped mid-stream; if that empties
+   the answer, an honest "couldn't find that course" fallback is emitted).
 6. **Output guard** — secret patterns redacted mid-stream; relevance-gated
    source citations; structured audit log per request.
 
@@ -64,7 +71,7 @@ Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
 | Frontend | Next.js 15 (App Router), TypeScript, streaming SSE UI |
 | Backend | FastAPI + Uvicorn, slowapi rate limiting |
 | Vector DB | Supabase PostgreSQL + pgvector (HNSW) |
-| Embeddings | sentence-transformers `all-MiniLM-L6-v2` (384-dim, local) |
+| Embeddings | sentence-transformers — fine-tuned `tamu-ece-embedder` (MiniLM-L6-v2 base, 384-dim, local) |
 | Re-ranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` (local) |
 | LLM | OpenAI `gpt-4o-mini` |
 | Hosting | GCP Cloud Run (service + nightly re-index job), Cloud Build CI, Cloud Scheduler |
@@ -81,8 +88,10 @@ Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
 | `backend/retriever.py` | Hybrid retrieval (dense + BM25 + RRF + cross-encoder) |
 | `backend/graph_retriever.py` | Faculty/research-area knowledge graph rosters |
 | `frontend/components/ChatUI.tsx` | Chat UI: streaming, stop button, feedback, follow-up chips |
-| `scripts/eval.py` | Regression evaluation (run after retrieval/prompt changes) |
+| `scripts/eval.py` | Deterministic keyword regression harness (fast smoke tests) |
+| `scripts/deepeval_eval.py` | LLM-judged regression suite (DeepEval): conversational grounding, guardrails, roster completeness, faithfulness, hallucination — judge reasons per case |
 | `cloudbuild.yaml` | CI: build combined image → deploy service + re-index job |
+| `RUNBOOK.md` | Complete operational & developer reference (file-by-file docs, troubleshooting) |
 
 ## Security hardening
 
@@ -101,8 +110,10 @@ Built by **Aarohi Mohrir** (M.S. Computer Science) under the guidance of
 ## Operations
 
 ```bash
-# Deploy: push to main — Cloud Build builds and deploys service + job (~15 min)
-git push origin main
+# Deploy (manual — the push-to-main trigger is configured but has not been
+# observed to fire; see RUNBOOK.md §6 for the proven build+deploy commands)
+gcloud builds submit . --tag <artifact-registry-tag> && \
+  gcloud run services update ecen-chatbot --region us-central1 --image <tag>
 
 # Manual re-index (full)
 gcloud run jobs execute ecen-reindex --region us-central1 --wait \
@@ -114,8 +125,10 @@ gcloud run services logs read ecen-chatbot --region us-central1 --limit 50
 # Usage counters (since instance start)
 curl https://<service-url>/admin/stats
 
-# Regression eval
-BASE_URL=https://<service-url> python scripts/eval.py
+# Regression evals
+BASE_URL=https://<service-url> python scripts/eval.py                # keyword smoke
+BASE_URL=https://<service-url> python scripts/deepeval_eval.py       # LLM-judged (needs OPENAI_API_KEY)
+BASE_URL=https://<service-url> python scripts/deepeval_eval.py --tag multiturn  # issue-#18 class
 ```
 
 Nightly re-index: Cloud Scheduler `ecen-reindex-daily` (2 AM Central) →
@@ -124,8 +137,8 @@ prune deleted pages, update Supabase.
 
 **Known trade-offs:** scale-to-zero means a ~1 min cold start after idle
 (masked by proxy retries + warm-up message); answer cache and stats counters
-are per-instance in-memory; embeddings must stay on base MiniLM unless both
-ingest and backend switch together (`EMBEDDING_MODEL`).
+are per-instance in-memory; the query embedder must match the embedder used
+at ingest time (`EMBEDDING_MODEL`) — switch both together and re-ingest.
 
 ## Local development
 
