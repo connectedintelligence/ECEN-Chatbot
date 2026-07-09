@@ -398,7 +398,7 @@ async def generate(question: str, chunks: list[dict], history: list[dict] | None
     (finish_reason == "length") so long lists are never cut off mid-answer.
     """
     context = _build_context(chunks)
-    user_msg = HUMAN_TEMPLATE.format(context=context, question=question)
+    user_msg = HUMAN_TEMPLATE.format(context=context, question=question.replace('<', '').replace('>', ''))
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -464,7 +464,7 @@ async def generate_stream(question: str, chunks: list[dict],
     """
     client = _get_client()
     context = _build_context(chunks)
-    user_msg = HUMAN_TEMPLATE.format(context=context, question=question)
+    user_msg = HUMAN_TEMPLATE.format(context=context, question=question.replace('<', '').replace('>', ''))
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
